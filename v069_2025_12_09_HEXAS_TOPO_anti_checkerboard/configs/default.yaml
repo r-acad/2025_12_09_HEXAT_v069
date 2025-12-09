@@ -1,0 +1,223 @@
+# // # FILE: .\configs\default.yaml
+
+# ==============================================================================
+# HEXA FEM TOPOLOGY OPTIMIZATION CONFIGURATION
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. HARDWARE PROFILE
+# ------------------------------------------------------------------------------
+# Selects the hardware presets for memory management and solver precision.
+# Options: 
+#   "RTX"  - For Workstation GPUs (e.g., RTX 3090, 4090, A6000). 
+#            Limits elements to ~200M, uses conservative memory safety (90%).
+#   "V100" - For Legacy Data Center GPUs (e.g., Tesla V100 16GB/32GB).
+#            Optimized for high FP64 precision, ECC safety (95%), 
+#            but lower element counts (~150M) due to VRAM limits.
+#   "H200" - For Data Center GPUs (e.g., H100, H200, A100 80GB). 
+#            Unlocks 1.5B+ elements, uses aggressive memory safety (98%),
+#            and tightens solver tolerance for FP64 tensor cores.
+gpu_profile: "RTX"
+
+# ------------------------------------------------------------------------------
+# 2. RESTART CONFIGURATION
+# ------------------------------------------------------------------------------
+restart_configuration:
+  # Set to true to resume a simulation from a .bin checkpoint file.
+  enable_restart: false
+  # Absolute or relative path to the checkpoint file (e.g., "RESULTS/iter_15_checkpoint.bin").
+  file_path: ""
+
+# ------------------------------------------------------------------------------
+# 3. GEOMETRY DEFINITION
+# ------------------------------------------------------------------------------
+geometry:
+  # Domain dimensions in physical units (e.g., meters).
+  length_x: 60
+  length_y: 20
+  length_z: 20
+        
+  # The starting resolution. The solver will generate a mesh with approximately
+  # this many elements for the first iteration (Nominal Phase).
+  target_elem_count: 100_000
+        
+  # Geometric primitives to modify the domain.
+  # "stiffness_ratio":
+  #    0.0  = VOID (Removes material, non-design space).
+  #    1.0  = SOLID (Standard material, designable).
+  #   >1.0  = STIFF REGION (e.g., 10x stiffness).
+  #   <0.0  = PASSIVE SOLID (Non-designable solid, e.g., -1.0 keeps it solid but doesn't optimize it).
+    
+  sphere1:
+    type: sphere
+    center: [12.51, 28.49, 50]
+    diameter: 8
+    stiffness_ratio: 0  # Remove material (Hole)
+  sphere2:
+    type: sphere
+    center: [60.38, -0.07, 50]
+    diameter: 4
+    stiffness_ratio: 10 # Stiff inclusion
+  sphere3:
+    type: sphere
+    center: [34.29, 5, 50]
+    diameter: 4
+    stiffness_ratio: -10 # Non-optimizable stiff inclusion
+      
+  box1:
+    type: box
+    center: [28, 15, 50]
+    size: [1, 2, 3] # Dimensions [x, y, z]
+    stiffness_ratio: 5
+      
+  box2:
+    type: box
+    center: [45.06, 8.95, 50]
+    size: [1, 4, 2]
+    stiffness_ratio: 0
+
+# ------------------------------------------------------------------------------
+# 4. BOUNDARY CONDITIONS (Dirichlet)
+# ------------------------------------------------------------------------------
+boundary_conditions:
+  # "location": Selects nodes. Can use coordinates, ranges ':', or percentages '100%'.
+  # "DoFs": Degrees of Freedom to fix (1=X, 2=Y, 3=Z).
+    
+  # Fix X, Y, Z translation at X=0 (Cantilever root)
+  - location: [0, ':', ':']
+    DoFs: [1, 2, 3]
+
+# ------------------------------------------------------------------------------
+# 5. EXTERNAL FORCES (Neumann)
+# ------------------------------------------------------------------------------
+external_forces:
+  # "name": Label for logging.
+  # "location": Where to apply the load.
+  # "F": Force vector [Fx, Fy, Fz].
+    
+  - name: Y10
+    location: [100%, 0, 0]
+    F: [0, 10, 0]
+  - name: Z-10
+    location: [100%, 0, 50%]
+    F: [0, 0, -10]
+  - name: Y20
+    location: [100%, 0, 100%]
+    F: [0, 20, 0]
+  - name: Mid_Y20
+    location: [50%, 0, 50%]
+    F: [0, 15, 0]
+
+# ------------------------------------------------------------------------------
+# 6. MATERIAL PROPERTIES
+# ------------------------------------------------------------------------------
+material:
+  E: 1                # Young's Modulus
+  nu: 0.3             # Poisson's Ratio
+  material_density: 0.001 # Physical density (for gravity calculations)
+  gravity_acceleration: 0.0 # Gravitational constant (e.g., 9.81)
+    
+  # Thermal Expansion Coefficient (alpha). 
+  # If 0.0, thermoelasticity is disabled.
+  delta_temperature: 0.0 
+
+# ------------------------------------------------------------------------------
+# 7. OPTIMIZATION SETTINGS
+# ------------------------------------------------------------------------------
+# Total number of optimization loops (Finite Element Analysis + Density Update).
+number_of_iterations: 30
+
+# Hard stop for debugging. 0 = Run FEA only (no opt), N = Stop after N iters. -1 = Disable.
+hard_stop_after_iteration: 100
+
+# Allowable stress ratio for the topology update heuristic.
+l1_stress_allowable: 1
+
+optimization_parameters:
+  min_density: 0.0001           # "Void" material density (to prevent singular matrix).
+  max_density_initial_add: 10   # Max density to add per step (heuristic).
+  density_clamp_max: 1          # Max allowed density (usually 1.0).
+  final_density_threshold: 0.98 # Elements below this are considered "void" in final prune.
+
+# Stress Regularization (Helmholtz Filter on Stress Field)
+  # Acts as a RADIUS MULTIPLIER for the filter size relative to the element size (voxel).
+  #   0.0 = Off (No regularization).
+  #   1.0 = Filter Radius is 1x the average element size (1 voxel).
+  #   2.0 = Filter Radius is 2x the average element size (2 voxels).
+  # Larger values create smoother stress fields but may blur local concentrations too much.
+  stress_regularization_ratio: 0.5
+
+  # Max Culling Ratio
+  # Limits the number of elements removed in a single iteration to prevent mesh collapse.
+  # 0.1 = Max 10% of currently active elements can be removed per step.
+  max_culling_ratio: 0.7
+
+  # Helmholtz Filter Radius (as percentage of the domain's max dimension).
+  # Used to enforce minimum member size and avoid checkerboarding.
+  filter_R_init_perc: 2
+  filter_R_interm_perc: 1
+  filter_R_final_perc: 1
+    
+  # At what percentage of total iterations to switch from intermediate to final radius.
+  filter_R_interm_iter_perc: 50
+
+# ------------------------------------------------------------------------------
+# 8. OUTPUT SETTINGS
+# ------------------------------------------------------------------------------
+output_settings:
+  # General fallback frequency (save every N iterations).
+  export_frequency: 1
+    
+  # Specific Frequencies (0 = Never).
+  save_bin_frequency: 1 # Binary checkpoint/web viewer files
+  save_STL_frequency: 10 # 3D Print / CAD geometry
+  save_VTK_frequency: 10 # Paraview scientific data
+
+  log_filename: simulation_log.txt
+    
+  # Density threshold for generating the STL isosurface (0.0 to 1.0).
+  iso_surface_threshold: 0.01
+
+# ------------------------------------------------------------------------------
+# 9. SOLVER PARAMETERS
+# ------------------------------------------------------------------------------
+solver_parameters:
+  solver_type: gpu          # "gpu", "direct" (CPU LU), or "matrix_free" (CPU CG).
+  
+  # Preconditioner Selection
+  # "jacobi"     = Diagonal scaling (Default. Fastest, but can fail on hard meshes).
+  # "amg"        = Algebraic Multigrid (Slow iterations, but very robust).
+  # "jacobi_amg" = Hybrid Adaptive. Starts with Jacobi; switches to AMG on instability.
+  preconditioner: "jacobi_amg"
+
+  tolerance: 1.e-9          # Convergence tolerance for the linear solver (Kx=f).
+  max_iterations: 40000     # Max Krylov subspace iterations.
+  diagonal_shift_factor: 1.e-9 # regularization term added to diagonal (damping).
+  gpu_method: krylov        # GPU strategy.
+  krylov_solver: cg         # Conjugate Gradient (Sym. pos. def).
+  filter_tolerance: 1.0e-5  # Tolerance for the Helmholtz filter solve.
+
+# ------------------------------------------------------------------------------
+# 10. GROWTH & HARDWARE SETTINGS
+# ------------------------------------------------------------------------------
+growth_settings:
+  # The target number of ACTIVE (non-void) elements the solver should try to reach.
+  # If the "gpu_profile" is H200, you can increase this significantly (e.g., 500M).
+  target_active_elements: 100_000
+
+  # SAFEGUARD: The maximum multiplier for mesh expansion in a single step.
+  # Prevents OOM crashes if the mesh tries to explode too fast.
+  max_growth_rate: 1.2
+
+  # TRIGGER: Refinement happens if active element count drops below 
+  # this percentage of the initial count.
+  nominal_refinement_threshold: 0.9
+
+  # --- HARDWARE LIMITS (Overridden by gpu_profile if detected) ---
+  # Absolute maximum background elements allowed. Acts as a safety ceiling.
+  max_background_elements: 500_000_000
+
+  # GPU VRAM Safety Factors (0.0 to 1.0).
+  # Reduces available VRAM calculation to provide buffer for fragmentation/OS.
+  gpu_solver_safety_factor: 0.95
+  gpu_filter_safety_factor: 0.85

@@ -1,0 +1,75 @@
+Fatal Error at 2025-12-05T11:53:51.532
+InterruptException:
+Stacktrace:
+  [1] try_yieldto(undo::typeof(Base.ensure_rescheduled))
+    @ Base .\task.jl:958
+  [2] wait()
+    @ Base .\task.jl:1022
+  [3] yield()
+    @ Base .\task.jl:902
+  [4] spinning_synchronization(f::typeof(CUDA.isdone), obj::CUDA.CuStream)
+    @ CUDA C:\Users\USUARIO\.julia\packages\CUDA\wPaDI\lib\cudadrv\synchronization.jl:90
+  [5] synchronize(stream::CUDA.CuStream; blocking::Bool, spin::Bool)
+    @ CUDA C:\Users\USUARIO\.julia\packages\CUDA\wPaDI\lib\cudadrv\synchronization.jl:196
+  [6] synchronize
+    @ C:\Users\USUARIO\.julia\packages\CUDA\wPaDI\lib\cudadrv\synchronization.jl:194 [inlined]
+  [7] synchronize
+    @ C:\Users\USUARIO\.julia\packages\CUDA\wPaDI\src\memory.jl:527 [inlined]
+  [8] getindex(gpu::CUDA.CuRefValue{Float32})
+    @ CUDA C:\Users\USUARIO\.julia\packages\CUDA\wPaDI\src\refpointer.jl:78
+  [9] dot
+    @ C:\Users\USUARIO\.julia\packages\CUDA\wPaDI\lib\cublas\wrappers.jl:185 [inlined]
+ [10] dot(x::CUDA.CuArray{Float32, 1, CUDA.DeviceMemory}, y::CUDA.CuArray{Float32, 1, CUDA.DeviceMemory})
+    @ CUDA.CUBLAS C:\Users\USUARIO\.julia\packages\CUDA\wPaDI\lib\cublas\linalg.jl:29
+ [11] gpu_matrix_free_cg_solve(nodes::Matrix{Float32}, elements::Matrix{Int64}, E::Float32, nu::Float32, bc_indicator::Matrix{Float32}, f::Vector{Float32}, density::Vector{Float32}; max_iter::Int64, tol::Float32, shift_factor::Float32, min_stiffness_threshold::Float32, config::Dict{Any, Any})
+    @ Main.HEXA.GPUSolver c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Solvers\GPUSolver.jl:293
+ [12] gpu_matrix_free_cg_solve
+    @ c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Solvers\GPUSolver.jl:172 [inlined]
+ [13] #solve_system_gpu#2
+    @ c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Solvers\GPUSolver.jl:347 [inlined]
+ [14] solve_system_gpu
+    @ c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Solvers\GPUSolver.jl:332 [inlined]
+ [15] #solve_system_iterative#1
+    @ c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Solvers\IterativeSolver.jl:41 [inlined]
+ [16] solve_system(nodes::Matrix{Float32}, elements::Matrix{Int64}, E::Float32, nu::Float32, bc_indicator::Matrix{Float32}, F::Vector{Float32}; density::Vector{Float32}, config::Dict{Any, Any}, min_stiffness_threshold::Float32, prune_voids::Bool)
+    @ Main.HEXA.Solver c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Solvers\Solver.jl:112
+ [17] _run_safe(config_file::String)
+    @ Main.HEXA c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Main.jl:252
+ [18] run_main(config_file::String)
+    @ Main.HEXA c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Main.jl:78
+ [19] top-level scope
+    @ c:\2025_12_04_HEXAS_TOPO_MATRIX_FREE_PACKAGE\src\Main.jl:341
+ [20] eval
+    @ .\boot.jl:430 [inlined]
+ [21] include_string(mapexpr::typeof(identity), mod::Module, code::String, filename::String)
+    @ Base .\loading.jl:2643
+ [22] include_string(m::Module, txt::String, fname::String)
+    @ Base .\loading.jl:2653
+ [23] invokelatest(::Any, ::Any, ::Vararg{Any}; kwargs::@Kwargs{})
+    @ Base .\essentials.jl:1055
+ [24] invokelatest(::Any, ::Any, ::Vararg{Any})
+    @ Base .\essentials.jl:1052
+ [25] inlineeval(m::Module, code::String, code_line::Int64, code_column::Int64, file::String; softscope::Bool)
+    @ VSCodeServer c:\Users\USUARIO\.vscode\extensions\julialang.language-julia-1.158.2\scripts\packages\VSCodeServer\src\eval.jl:271
+ [26] (::VSCodeServer.var"#69#74"{Bool, Bool, Bool, Module, String, Int64, Int64, String, VSCodeServer.ReplRunCodeRequestParams})()
+    @ VSCodeServer c:\Users\USUARIO\.vscode\extensions\julialang.language-julia-1.158.2\scripts\packages\VSCodeServer\src\eval.jl:181
+ [27] withpath(f::VSCodeServer.var"#69#74"{Bool, Bool, Bool, Module, String, Int64, Int64, String, VSCodeServer.ReplRunCodeRequestParams}, path::String)
+    @ VSCodeServer c:\Users\USUARIO\.vscode\extensions\julialang.language-julia-1.158.2\scripts\packages\VSCodeServer\src\repl.jl:278
+ [28] (::VSCodeServer.var"#68#73"{Bool, Bool, Bool, Module, String, Int64, Int64, String, VSCodeServer.ReplRunCodeRequestParams})()
+    @ VSCodeServer c:\Users\USUARIO\.vscode\extensions\julialang.language-julia-1.158.2\scripts\packages\VSCodeServer\src\eval.jl:179
+ [29] hideprompt(f::VSCodeServer.var"#68#73"{Bool, Bool, Bool, Module, String, Int64, Int64, String, VSCodeServer.ReplRunCodeRequestParams})
+    @ VSCodeServer c:\Users\USUARIO\.vscode\extensions\julialang.language-julia-1.158.2\scripts\packages\VSCodeServer\src\repl.jl:38
+ [30] #67
+    @ c:\Users\USUARIO\.vscode\extensions\julialang.language-julia-1.158.2\scripts\packages\VSCodeServer\src\eval.jl:150 [inlined]
+ [31] with_logstate(f::VSCodeServer.var"#67#72"{Bool, Bool, Bool, Module, String, Int64, Int64, String, VSCodeServer.ReplRunCodeRequestParams}, logstate::Base.CoreLogging.LogState)
+    @ Base.CoreLogging .\logging\logging.jl:522
+ [32] with_logger
+    @ .\logging\logging.jl:632 [inlined]
+ [33] (::VSCodeServer.var"#66#71"{VSCodeServer.ReplRunCodeRequestParams})()
+    @ VSCodeServer c:\Users\USUARIO\.vscode\extensions\julialang.language-julia-1.158.2\scripts\packages\VSCodeServer\src\eval.jl:263
+ [34] #invokelatest#2
+    @ .\essentials.jl:1055 [inlined]
+ [35] invokelatest(::Any)
+    @ Base .\essentials.jl:1052
+ [36] (::VSCodeServer.var"#64#65")()
+    @ VSCodeServer c:\Users\USUARIO\.vscode\extensions\julialang.language-julia-1.158.2\scripts\packages\VSCodeServer\src\eval.jl:34

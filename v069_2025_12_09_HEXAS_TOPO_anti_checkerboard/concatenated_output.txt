@@ -1,0 +1,4643 @@
+"// # FILE: .\Run.jl";
+
+using Pkg
+
+println(">>> [LAUNCHER] Activating Project Environment...")
+Pkg.activate(@__DIR__)
+
+println(">>> [LAUNCHER] Checking Dependencies...")
+
+try
+    
+    Pkg.instantiate()
+catch e
+    println("!!! [LAUNCHER] Existing Manifest is incompatible with this Julia version.")
+    println("!!! [LAUNCHER] Deleting Manifest.toml and resolving dependencies...")
+    
+    
+    manifest_path = joinpath(@__DIR__, "Manifest.toml")
+    if isfile(manifest_path)
+        rm(manifest_path, force=true)
+    end
+    
+    
+    Pkg.resolve()
+    Pkg.instantiate()
+    println(">>> [LAUNCHER] Dependencies resolved successfully.")
+end
+
+const MAIN_SCRIPT = joinpath(@__DIR__, "src", "Main.jl")
+
+# The 'ARGS' passed to this script are automatically visible to Main.jl
+println(">>> [LAUNCHER] Starting Solver...")
+println("-"^60)
+include(MAIN_SCRIPT)
+"// # FILE: .\configs\default.yaml";
+# // # FILE: .\configs\default.yaml
+
+# ==============================================================================
+# HEXA FEM TOPOLOGY OPTIMIZATION CONFIGURATION
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. HARDWARE PROFILE
+# ------------------------------------------------------------------------------
+# Selects the hardware presets for memory management and solver precision.
+# Options: 
+#   "RTX"  - For Workstation GPUs (e.g., RTX 3090, 4090, A6000). 
+#            Limits elements to ~200M, uses conservative memory safety (90%).
+#   "V100" - For Legacy Data Center GPUs (e.g., Tesla V100 16GB/32GB).
+#            Optimized for high FP64 precision, ECC safety (95%), 
+#            but lower element counts (~150M) due to VRAM limits.
+#   "H200" - For Data Center GPUs (e.g., H100, H200, A100 80GB). 
+#            Unlocks 1.5B+ elements, uses aggressive memory safety (98%),
+#            and tightens solver tolerance for FP64 tensor cores.
+gpu_profile: "RTX"
+
+# ------------------------------------------------------------------------------
+# 2. RESTART CONFIGURATION
+# ------------------------------------------------------------------------------
+restart_configuration:
+  # Set to true to resume a simulation from a .bin checkpoint file.
+  enable_restart: false
+  # Absolute or relative path to the checkpoint file (e.g., "RESULTS/iter_15_checkpoint.bin").
+  file_path: ""
+
+# ------------------------------------------------------------------------------
+# 3. GEOMETRY DEFINITION
+# ------------------------------------------------------------------------------
+geometry:
+  # Domain dimensions in physical units (e.g., meters).
+  length_x: 60
+  length_y: 20
+  length_z: 20
+        
+  # The starting resolution. The solver will generate a mesh with approximately
+  # this many elements for the first iteration (Nominal Phase).
+  target_elem_count: 100_000
+        
+  # Geometric primitives to modify the domain.
+  # "stiffness_ratio":
+  #    0.0  = VOID (Removes material, non-design space).
+  #    1.0  = SOLID (Standard material, designable).
+  #   >1.0  = STIFF REGION (e.g., 10x stiffness).
+  #   <0.0  = PASSIVE SOLID (Non-designable solid, e.g., -1.0 keeps it solid but doesn't optimize it).
+    
+  sphere1:
+    type: sphere
+    center: [12.51, 28.49, 50]
+    diameter: 8
+    stiffness_ratio: 0  # Remove material (Hole)
+  sphere2:
+    type: sphere
+    center: [60.38, -0.07, 50]
+    diameter: 4
+    stiffness_ratio: 10 # Stiff inclusion
+  sphere3:
+    type: sphere
+    center: [34.29, 5, 50]
+    diameter: 4
+    stiffness_ratio: -10 # Non-optimizable stiff inclusion
+      
+  box1:
+    type: box
+    center: [28, 15, 50]
+    size: [1, 2, 3] # Dimensions [x, y, z]
+    stiffness_ratio: 5
+      
+  box2:
+    type: box
+    center: [45.06, 8.95, 50]
+    size: [1, 4, 2]
+    stiffness_ratio: 0
+
+# ------------------------------------------------------------------------------
+# 4. BOUNDARY CONDITIONS (Dirichlet)
+# ------------------------------------------------------------------------------
+boundary_conditions:
+  # "location": Selects nodes. Can use coordinates, ranges ':', or percentages '100%'.
+  # "DoFs": Degrees of Freedom to fix (1=X, 2=Y, 3=Z).
+    
+  # Fix X, Y, Z translation at X=0 (Cantilever root)
+  - location: [0, ':', ':']
+    DoFs: [1, 2, 3]
+
+# ------------------------------------------------------------------------------
+# 5. EXTERNAL FORCES (Neumann)
+# ------------------------------------------------------------------------------
+external_forces:
+  # "name": Label for logging.
+  # "location": Where to apply the load.
+  # "F": Force vector [Fx, Fy, Fz].
+    
+  - name: Y10
+    location: [100%, 0, 0]
+    F: [0, 10, 0]
+  - name: Z-10
+    location: [100%, 0, 50%]
+    F: [0, 0, -10]
+  - name: Y20
+    location: [100%, 0, 100%]
+    F: [0, 20, 0]
+  - name: Mid_Y20
+    location: [50%, 0, 50%]
+    F: [0, 15, 0]
+
+# ------------------------------------------------------------------------------
+# 6. MATERIAL PROPERTIES
+# ------------------------------------------------------------------------------
+material:
+  E: 1                # Young's Modulus
+  nu: 0.3             # Poisson's Ratio
+  material_density: 0.001 # Physical density (for gravity calculations)
+  gravity_acceleration: 0.0 # Gravitational constant (e.g., 9.81)
+    
+  # Thermal Expansion Coefficient (alpha). 
+  # If 0.0, thermoelasticity is disabled.
+  delta_temperature: 0.0 
+
+# ------------------------------------------------------------------------------
+# 7. OPTIMIZATION SETTINGS
+# ------------------------------------------------------------------------------
+# Total number of optimization loops (Finite Element Analysis + Density Update).
+number_of_iterations: 30
+
+# Hard stop for debugging. 0 = Run FEA only (no opt), N = Stop after N iters. -1 = Disable.
+hard_stop_after_iteration: 100
+
+# Allowable stress ratio for the topology update heuristic.
+l1_stress_allowable: 1
+
+optimization_parameters:
+  min_density: 0.0001           # "Void" material density (to prevent singular matrix).
+  max_density_initial_add: 10   # Max density to add per step (heuristic).
+  density_clamp_max: 1          # Max allowed density (usually 1.0).
+  final_density_threshold: 0.98 # Elements below this are considered "void" in final prune.
+
+# Stress Regularization (Helmholtz Filter on Stress Field)
+  # Acts as a RADIUS MULTIPLIER for the filter size relative to the element size (voxel).
+  #   0.0 = Off (No regularization).
+  #   1.0 = Filter Radius is 1x the average element size (1 voxel).
+  #   2.0 = Filter Radius is 2x the average element size (2 voxels).
+  # Larger values create smoother stress fields but may blur local concentrations too much.
+  stress_regularization_ratio: 0.5
+
+  # Max Culling Ratio
+  # Limits the number of elements removed in a single iteration to prevent mesh collapse.
+  # 0.1 = Max 10% of currently active elements can be removed per step.
+  max_culling_ratio: 0.7
+
+  # Helmholtz Filter Radius (as percentage of the domain's max dimension).
+  # Used to enforce minimum member size and avoid checkerboarding.
+  filter_R_init_perc: 2
+  filter_R_interm_perc: 1
+  filter_R_final_perc: 1
+    
+  # At what percentage of total iterations to switch from intermediate to final radius.
+  filter_R_interm_iter_perc: 50
+
+# ------------------------------------------------------------------------------
+# 8. OUTPUT SETTINGS
+# ------------------------------------------------------------------------------
+output_settings:
+  # General fallback frequency (save every N iterations).
+  export_frequency: 1
+    
+  # Specific Frequencies (0 = Never).
+  save_bin_frequency: 1 # Binary checkpoint/web viewer files
+  save_STL_frequency: 10 # 3D Print / CAD geometry
+  save_VTK_frequency: 10 # Paraview scientific data
+
+  log_filename: simulation_log.txt
+    
+  # Density threshold for generating the STL isosurface (0.0 to 1.0).
+  iso_surface_threshold: 0.01
+
+# ------------------------------------------------------------------------------
+# 9. SOLVER PARAMETERS
+# ------------------------------------------------------------------------------
+solver_parameters:
+  solver_type: gpu          # "gpu", "direct" (CPU LU), or "matrix_free" (CPU CG).
+  
+  # Preconditioner Selection
+  # "jacobi"     = Diagonal scaling (Default. Fastest, but can fail on hard meshes).
+  # "amg"        = Algebraic Multigrid (Slow iterations, but very robust).
+  # "jacobi_amg" = Hybrid Adaptive. Starts with Jacobi; switches to AMG on instability.
+  preconditioner: "jacobi_amg"
+
+  tolerance: 1.e-9          # Convergence tolerance for the linear solver (Kx=f).
+  max_iterations: 40000     # Max Krylov subspace iterations.
+  diagonal_shift_factor: 1.e-9 # regularization term added to diagonal (damping).
+  gpu_method: krylov        # GPU strategy.
+  krylov_solver: cg         # Conjugate Gradient (Sym. pos. def).
+  filter_tolerance: 1.0e-5  # Tolerance for the Helmholtz filter solve.
+
+# ------------------------------------------------------------------------------
+# 10. GROWTH & HARDWARE SETTINGS
+# ------------------------------------------------------------------------------
+growth_settings:
+  # The target number of ACTIVE (non-void) elements the solver should try to reach.
+  # If the "gpu_profile" is H200, you can increase this significantly (e.g., 500M).
+  target_active_elements: 100_000
+
+  # SAFEGUARD: The maximum multiplier for mesh expansion in a single step.
+  # Prevents OOM crashes if the mesh tries to explode too fast.
+  max_growth_rate: 1.2
+
+  # TRIGGER: Refinement happens if active element count drops below 
+  # this percentage of the initial count.
+  nominal_refinement_threshold: 0.9
+
+  # --- HARDWARE LIMITS (Overridden by gpu_profile if detected) ---
+  # Absolute maximum background elements allowed. Acts as a safety ceiling.
+  max_background_elements: 500_000_000
+
+  # GPU VRAM Safety Factors (0.0 to 1.0).
+  # Reduces available VRAM calculation to provide buffer for fragmentation/OS.
+  gpu_solver_safety_factor: 0.95
+  gpu_filter_safety_factor: 0.85
+"// # FILE: .\src\Main.jl";
+
+
+using Pkg
+
+const PROJECT_ROOT = joinpath(@__DIR__, "..")
+
+const REQUIRED_PACKAGES = [
+    "CUDA", 
+    "JSON", 
+    "JSON3", 
+    "Krylov", 
+    "LinearOperators", 
+    "MarchingCubes", 
+    "YAML",
+    "AlgebraicMultigrid",
+    "SparseArrays"
+]
+
+function check_and_install_packages()
+    
+    
+    println(">>> [SETUP] Verifying dependencies...")
+    
+    
+    project_deps = Pkg.project().dependencies
+    
+    missing_pkgs = []
+    for pkg_name in REQUIRED_PACKAGES
+        if !haskey(project_deps, pkg_name)
+            push!(missing_pkgs, pkg_name)
+        end
+    end
+
+    if !isempty(missing_pkgs)
+        println(">>> [SETUP] The following packages are missing from the environment: $missing_pkgs")
+        println(">>> [SETUP] Adding them now (relaxed constraints)...")
+        try
+            for pkg in missing_pkgs
+                Pkg.add(pkg)
+            end
+        catch e
+            println("!!! Error adding packages: $e")
+        end
+    else
+        println(">>> [SETUP] Dependencies appear correct.")
+    end
+end
+
+check_and_install_packages()
+
+println("\n>>> SCRIPT START: Loading Modules...")
+
+module HEXA
+
+using LinearAlgebra
+using SparseArrays
+using Printf
+using Base.Threads
+using JSON
+using Dates
+using Statistics 
+using CUDA
+using YAML
+using AlgebraicMultigrid
+
+using ..Main: PROJECT_ROOT
+
+include("Utils/Diagnostics.jl")
+include("Utils/Helpers.jl")
+using .Diagnostics
+using .Helpers
+
+include("Core/Element.jl")
+include("Core/Boundary.jl")
+include("Core/Stress.jl")
+
+using .Element
+using .Boundary
+using .Stress
+
+include("Mesh/Mesh.jl")
+include("Mesh/MeshUtilities.jl")
+include("Mesh/MeshPruner.jl") 
+include("Mesh/MeshRefiner.jl") 
+include("Mesh/MeshShapeProcessing.jl") 
+
+using .Mesh
+using .MeshUtilities
+using .MeshPruner 
+using .MeshRefiner 
+using .MeshShapeProcessing
+
+include("Solvers/CPUSolver.jl")
+include("Solvers/GPUSolver.jl")
+include("Solvers/DirectSolver.jl")
+include("Solvers/IterativeSolver.jl")
+include("Solvers/Solver.jl") 
+
+using .CPUSolver
+using .GPUSolver
+using .DirectSolver
+using .IterativeSolver
+using .Solver
+
+include("IO/Configuration.jl")
+include("IO/ExportVTK.jl")
+include("IO/Postprocessing.jl")
+include("Optimization/GPUHelmholtz.jl") 
+include("Optimization/TopOpt.jl") 
+
+using .Configuration
+using .ExportVTK
+using .Postprocessing
+using .TopologyOptimization 
+
+function __init__()
+    Diagnostics.log_status("HEXA Finite Element Solver initialized")
+    Helpers.clear_gpu_memory()
+end
+
+
+function apply_hardware_profile!(config::Dict)
+    gpu_type = get(config, "gpu_profile", "RTX")
+    println("\n>>> [HARDWARE] Detected Profile in Config: $gpu_type")
+    growth = get(config, "growth_settings", Dict())
+    solver = get(config, "solver_parameters", Dict())
+    
+    if uppercase(gpu_type) in ["H", "H200", "H100"]
+        println("    -> High-Performance Data Center GPU Detected (H-Series).")
+        growth["max_background_elements"] = 1_500_000_000 
+        growth["max_growth_rate"] = 1.5      
+        growth["gpu_solver_safety_factor"] = 0.98 
+        solver["tolerance"] = 1.0e-12 
+        solver["diagonal_shift_factor"] = 1.0e-10
+        solver["solver_type"] = "gpu"
+    elseif uppercase(gpu_type) == "V100"
+        println("    -> Legacy Data Center GPU Detected (V100).")
+        growth["max_background_elements"] = 150_000_000 
+        growth["max_growth_rate"] = 1.3      
+        growth["gpu_solver_safety_factor"] = 0.95 
+        solver["tolerance"] = 1.0e-10 
+        solver["diagonal_shift_factor"] = 1.0e-9
+        solver["solver_type"] = "gpu"
+    elseif uppercase(gpu_type) == "RTX"
+        println("    -> Consumer/Workstation GPU Detected (RTX-Series).")
+        growth["max_background_elements"] = 200_000_000
+        growth["max_growth_rate"] = 1.2      
+        growth["gpu_solver_safety_factor"] = 0.90 
+        solver["tolerance"] = 1.0e-6
+        solver["solver_type"] = "gpu"
+    else
+        println("    -> Unknown GPU profile '$gpu_type'. Defaulting to RTX safe mode.")
+        growth["max_background_elements"] = 100_000_000
+    end
+    
+    config["growth_settings"] = growth
+    config["solver_parameters"] = solver
+    config["hardware_profile_applied"] = gpu_type
+end
+
+function run_main(input_file=nothing)
+    try
+        _run_safe(input_file)
+    catch e
+        println("\n" * "!"^60)
+        println("!!! FATAL ERROR DETECTED !!!")
+        println("!"^60)
+        showerror(stderr, e, catch_backtrace())
+    end
+end
+
+function _run_safe(input_file)
+    println(">>> [INIT] Clearing GPU Memory from previous runs...")
+    if CUDA.functional()
+        Helpers.clear_gpu_memory()
+        CUDA.device!(0) 
+        name = CUDA.name(CUDA.device())
+        mem = CUDA.total_memory() / 1024^3
+        println(">>> [INIT] GPU Detected: $name ($(@sprintf("%.2f", mem)) GB VRAM)")
+    end
+    GC.gc()
+    
+    if input_file === nothing
+        input_file = joinpath(PROJECT_ROOT, "configs", "default.yaml")
+    end
+    
+    if !isfile(input_file)
+        error("Input file not found: $input_file")
+    end
+
+    println(">>> [INIT] Loading configuration from: $input_file")
+    current_config = Configuration.load_configuration(input_file)
+    apply_hardware_profile!(current_config)
+    
+    restart_conf = get(current_config, "restart_configuration", Dict())
+    enable_restart = get(restart_conf, "enable_restart", false)
+    restart_path = get(restart_conf, "file_path", "")
+    
+    config = Dict{Any,Any}()
+    density = Float32[]
+    start_iter = 1
+    restart_radius = 0.0f0
+    restart_threshold = 0.0f0
+    is_restart_active = false
+
+    if enable_restart
+        if isfile(restart_path)
+            println("\n>>> RESTART MODE ACTIVE")
+            println("    Loading checkpoint: $restart_path")
+            saved_config, density, saved_iter, restart_radius, restart_threshold = Configuration.load_checkpoint(restart_path)
+            config = merge(saved_config, current_config)
+            apply_hardware_profile!(config)
+            start_iter = saved_iter + 1
+            is_restart_active = true
+        else
+            println("\n!!! WARNING: Restart requested but file not found: '$restart_path'")
+            println("!!! Falling back to FRESH START.")
+            config = current_config
+            is_restart_active = false
+        end
+    else
+        println("\n>>> FRESH START MODE")
+        config = current_config
+        is_restart_active = false
+    end
+    
+    hard_stop_iter = get(config, "hard_stop_after_iteration", -1)
+    if hard_stop_iter > -1
+        println(">>> HARD STOP ENABLED: Execution will stop after iteration $hard_stop_iter.")
+    end
+
+    out_settings = get(config, "output_settings", Dict())
+    default_freq = get(out_settings, "export_frequency", 5)
+    save_bin_freq = get(out_settings, "save_bin_frequency", default_freq)
+    save_stl_freq = get(out_settings, "save_STL_frequency", default_freq)
+    save_vtk_freq = get(out_settings, "save_VTK_frequency", default_freq)
+
+    RESULTS_DIR = joinpath(PROJECT_ROOT, "RESULTS")
+    if !isdir(RESULTS_DIR); mkpath(RESULTS_DIR); end
+
+    raw_log_name = get(out_settings, "log_filename", "simulation_log.txt")
+    log_filename = joinpath(PROJECT_ROOT, basename(raw_log_name))
+    iso_threshold_val = get(out_settings, "iso_surface_threshold", 0.8)
+    iso_threshold = Float32(iso_threshold_val)
+    
+    if !is_restart_active
+        Diagnostics.init_log_file(log_filename, config)
+    else
+        Diagnostics.log_status("--- RESTARTING SIMULATION (Iter $start_iter) ---")
+    end
+    
+    geom = Configuration.setup_geometry(config)
+    nodes, elements, dims = generate_mesh(geom.nElem_x, geom.nElem_y, geom.nElem_z; dx = geom.dx, dy = geom.dy, dz = geom.dz)
+    initial_target_count = size(elements, 1)
+    
+    if is_restart_active && length(density) != initial_target_count
+        error("Restart Mismatch: Checkpoint density size ($(length(density))) != Generated Mesh size ($initial_target_count).")
+    end
+    
+    domain_bounds = (min_pt=[0.0f0,0.0f0,0.0f0], len_x=geom.dx*geom.nElem_x, len_y=geom.dy*geom.nElem_y, len_z=geom.dz*geom.nElem_z)
+    
+    config["geometry"]["nElem_x_computed"] = geom.nElem_x
+    config["geometry"]["nElem_y_computed"] = geom.nElem_y
+    config["geometry"]["nElem_z_computed"] = geom.nElem_z
+    config["geometry"]["dx_computed"] = geom.dx
+    config["geometry"]["dy_computed"] = geom.dy
+    config["geometry"]["dz_computed"] = geom.dz
+    config["geometry"]["max_domain_dim"] = geom.max_domain_dim
+    
+    nNodes = size(nodes, 1)
+    ndof = nNodes * 3
+    bc_data = config["boundary_conditions"]
+    forces_data = config["external_forces"]
+    
+    bc_indicator = Boundary.get_bc_indicator(nNodes, nodes, Vector{Any}(bc_data))
+    F_external = zeros(Float32, ndof)
+    Boundary.apply_external_forces!(F_external, Vector{Any}(forces_data), nodes, elements)
+    println("Boundary Conditions & External Forces Mapped.")
+
+    E = Float32(config["material"]["E"])
+    nu = Float32(config["material"]["nu"])
+    material_density = Float32(get(config["material"], "material_density", 0.0))
+    gravity_accel = Float32(get(config["material"], "gravity_acceleration", 9.81))
+    delta_T = Float32(get(config["material"], "delta_temperature", 0.0))
+    if abs(delta_T) > 1e-6; println(">>> THERMOELASTICITY ENABLED: Delta T = $delta_T"); end
+
+    original_density = ones(Float32, size(elements, 1)) 
+    protected_elements_mask = falses(size(elements, 1)) 
+    alpha_field = zeros(Float32, size(elements, 1))
+
+    if !is_restart_active
+        density, original_density, protected_elements_mask, alpha_field = Configuration.initialize_density_field(nodes, elements, geom.shapes, config)
+    else
+        _, original_density, protected_elements_mask, alpha_field = Configuration.initialize_density_field(nodes, elements, geom.shapes, config)
+    end
+    
+    opt_params = config["optimization_parameters"]
+    min_density = Float32(get(opt_params, "min_density", 1.0e-3))
+    max_density_clamp = Float32(get(opt_params, "density_clamp_max", 1.0))
+    base_name = splitext(basename(input_file))[1]
+    
+    growth_conf = get(config, "growth_settings", Dict())
+    nominal_iterations = get(config, "number_of_iterations", 30)
+    raw_active_target = get(growth_conf, "target_active_elements", initial_target_count)
+    final_target_active = isa(raw_active_target, String) ? parse(Int, replace(raw_active_target, "_" => "")) : Int(raw_active_target)
+
+    max_growth_rate = Float64(get(growth_conf, "max_growth_rate", 1.2))
+    raw_bg_limit = get(growth_conf, "max_background_elements", 800_000_000)
+    hard_elem_limit = isa(raw_bg_limit, String) ? parse(Int, replace(raw_bg_limit, "_" => "")) : Int(raw_bg_limit)
+
+    println(">>> [LIMITS] Hard Element Limit set to: $(Base.format_bytes(hard_elem_limit * 100)) approx ($hard_elem_limit elems)")
+
+    l1_stress_allowable = Float32(get(config, "l1_stress_allowable", 1.0))
+    if l1_stress_allowable == 0.0f0; l1_stress_allowable = 1.0f0; end
+
+    U_full = zeros(Float32, ndof)
+    max_change = 1.0f0
+    filter_R = is_restart_active ? restart_radius : 0.0f0
+    curr_threshold = is_restart_active ? restart_threshold : 0.0f0
+    
+    iter = start_iter
+    keep_running = true
+    is_annealing = false
+    
+    println("\n--- Starting Optimization (Iter $iter / $nominal_iterations) ---")
+    println("Log File: $log_filename")
+    
+    while keep_running
+        iter_start_time = time()
+        status_msg = "Nominal"
+        current_target_active = final_target_active
+        phase_refinement_needed = false
+        gravity_scale = 0.0f0
+        
+        if iter <= nominal_iterations
+            status_msg = "Nominal"
+            is_annealing = false
+            current_target_active = initial_target_count 
+            current_active = count(d -> d > 0.01, density)
+            nominal_ref_thresh = Float64(get(growth_conf, "nominal_refinement_threshold", 0.8))
+            if current_active < (initial_target_count * nominal_ref_thresh); phase_refinement_needed = true; end
+            gravity_scale = 0.0f0
+        else
+            status_msg = "Growth/Ann"
+            is_annealing = true 
+            current_active = count(d -> d > 0.01, density)
+            if current_active < (final_target_active * 0.90); phase_refinement_needed = true; end
+            gravity_scale = 1.0f0 
+        end
+
+        if phase_refinement_needed
+             prev_elem_count = size(elements, 1)
+             nodes, elements, density, alpha_field, dims = MeshRefiner.refine_mesh_and_fields(
+                nodes, elements, density, alpha_field, dims, current_target_active, domain_bounds;
+                max_growth_rate = max_growth_rate, hard_element_limit = hard_elem_limit
+            )
+            GC.gc()
+            
+            if size(elements, 1) > prev_elem_count
+                status_msg = "Refined"
+                nElem_x_new, nElem_y_new, nElem_z_new = dims[1]-1, dims[2]-1, dims[3]-1
+                current_dx = domain_bounds.len_x / nElem_x_new
+                current_dy = domain_bounds.len_y / nElem_y_new
+                current_dz = domain_bounds.len_z / nElem_z_new
+                
+                config["geometry"]["nElem_x_computed"] = nElem_x_new
+                config["geometry"]["nElem_y_computed"] = nElem_y_new
+                config["geometry"]["nElem_z_computed"] = nElem_z_new
+                config["geometry"]["dx_computed"] = current_dx
+                config["geometry"]["dy_computed"] = current_dy
+                config["geometry"]["dz_computed"] = current_dz
+                
+                geom = (nElem_x=nElem_x_new, nElem_y=nElem_y_new, nElem_z=nElem_z_new, dx=current_dx, dy=current_dy, dz=current_dz, shapes=geom.shapes, actual_elem_count=size(elements, 1), max_domain_dim=geom.max_domain_dim)
+
+                println("    [Refinement] Re-mapping Boundary Conditions & Forces...")
+                nNodes = size(nodes, 1)
+                ndof = nNodes * 3
+                bc_indicator = Boundary.get_bc_indicator(nNodes, nodes, Vector{Any}(bc_data))
+                F_external = zeros(Float32, ndof)
+                Boundary.apply_external_forces!(F_external, Vector{Any}(forces_data), nodes, elements)
+                _, original_density, protected_elements_mask, _ = Configuration.initialize_density_field(nodes, elements, geom.shapes, config)
+                println("    [Refinement] Resetting solution guess.")
+                U_full = zeros(Float32, ndof)
+                TopologyOptimization.reset_filter_cache!()
+            else
+                status_msg = "RefineSkip"
+            end
+        else
+            if iter > nominal_iterations; status_msg = "Annealing"; end
+        end
+
+        if iter > 1
+            Threads.@threads for e in 1:size(elements, 1)
+                if protected_elements_mask[e]; density[e] = original_density[e]; end
+            end
+        end
+        
+        config["current_outer_iter"] = iter
+        F_total = copy(F_external)
+        
+        if gravity_scale > 1e-4 && material_density > 1e-9
+             dx_curr = Float32(config["geometry"]["dx_computed"]); dy_curr = Float32(config["geometry"]["dy_computed"]); dz_curr = Float32(config["geometry"]["dz_computed"])
+             Boundary.add_self_weight!(F_total, density, material_density, gravity_scale, elements, dx_curr, dy_curr, dz_curr, gravity_accel)
+        end
+        
+        if abs(delta_T) > 1e-6
+             Boundary.compute_global_thermal_forces!(F_total, nodes, elements, alpha_field, delta_T, E, nu, density)
+        end
+        
+        
+        sol_tuple = Solver.solve_system(
+            nodes, elements, E, nu, bc_indicator, F_total;
+            density=density, config=config, min_stiffness_threshold=min_density, 
+            prune_voids=true, u_prev=U_full 
+        )
+        
+        U_new = sol_tuple[1]
+        last_residual = sol_tuple[2]
+        prec_used = sol_tuple[3]
+        
+        U_full = U_new
+        
+        if CUDA.functional(); GC.gc(); CUDA.reclaim(); end
+        
+        compliance = dot(F_total, U_full)
+        strain_energy = 0.5 * compliance
+        
+        principal_field, vonmises_field, full_stress_voigt, l1_stress_norm_field, principal_dir_field = Stress.compute_stress_field(nodes, elements, U_full, E, nu, density)
+        
+        if iter == 1
+            println("    -> Exporting INITIAL REFERENCE STATE (Iter 0 - Before Optimization)...")
+            do_bin_init = (save_bin_freq > 0); do_stl_init = (save_stl_freq > 0); do_vtk_init = (save_vtk_freq > 0)
+            if do_bin_init || do_stl_init || do_vtk_init
+                export_iteration_results(0, base_name, RESULTS_DIR, nodes, elements, U_full, F_total, bc_indicator, principal_field, vonmises_field, full_stress_voigt, l1_stress_norm_field, principal_dir_field, density, E, geom; iso_threshold=Float32(iso_threshold), current_radius=Float32(filter_R), config=config, save_bin=do_bin_init, save_stl=do_stl_init, save_vtk=do_vtk_init)
+            end
+            if hard_stop_iter == 0; println(">>> HARD STOP: Stopping after background analysis (Iter 0)."); keep_running = false; break; end
+        end
+        
+        active_stress_indices = findall(d -> d > 0.1f0, density)
+        avg_l1_stress = isempty(active_stress_indices) ? 0.0f0 : mean(view(l1_stress_norm_field, active_stress_indices))
+        vol_total = length(density); active_non_soft = count(d -> d > min_density, density); vol_frac = sum(density) / vol_total
+        
+        res_tuple = TopologyOptimization.update_density!(density, l1_stress_norm_field, protected_elements_mask, E, l1_stress_allowable, iter, nominal_iterations + 10, original_density, min_density, max_density_clamp, config, elements, is_annealing)
+        max_change, filter_R, curr_threshold = res_tuple
+        
+        iter_time = time() - iter_start_time
+        cur_dims_str = "$(config["geometry"]["nElem_x_computed"])x$(config["geometry"]["nElem_y_computed"])x$(config["geometry"]["nElem_z_computed"])"
+        
+        
+        Diagnostics.write_iteration_log(
+            log_filename, iter, cur_dims_str, vol_total, active_non_soft, 
+            filter_R, curr_threshold, compliance, strain_energy, avg_l1_stress, vol_frac, max_change, 
+            status_msg, iter_time, last_residual, prec_used
+        )
+
+        do_bin = (save_bin_freq > 0) && (iter % save_bin_freq == 0); do_stl = (save_stl_freq > 0) && (iter % save_stl_freq == 0); do_vtk = (save_vtk_freq > 0) && (iter % save_vtk_freq == 0)
+        should_export = do_bin || do_stl || do_vtk
+
+        if should_export
+            println("    -> Exporting results...")
+            export_iteration_results(iter, base_name, RESULTS_DIR, nodes, elements, U_full, F_total, bc_indicator, principal_field, vonmises_field, full_stress_voigt, l1_stress_norm_field, principal_dir_field, density, E, geom; iso_threshold=Float32(iso_threshold), current_radius=Float32(filter_R), config=config, save_bin=do_bin, save_stl=do_stl, save_vtk=do_vtk)
+        end
+        
+        if hard_stop_iter > 0 && iter >= hard_stop_iter; println(">>> HARD STOP: Reached target iteration $hard_stop_iter."); keep_running = false; break; end
+        if iter > (nominal_iterations + 50); println("\n>>> STOPPING: Reached iteration limit."); keep_running = false; end
+        if nominal_iterations == 0; keep_running = false; end
+
+        if CUDA.functional(); Helpers.clear_gpu_memory(); end
+        iter += 1
+        GC.gc() 
+    end
+    Diagnostics.log_status("Finished.")
+end
+
+end
+
+using .HEXA
+
+config_file = joinpath(Main.PROJECT_ROOT, "configs", "default.yaml")
+if length(ARGS) >= 1; if endswith(lowercase(ARGS[1]), ".yaml") || endswith(lowercase(ARGS[1]), ".json"); config_file = ARGS[1]; end; end
+
+if isfile(config_file)
+    HEXA.run_main(config_file)
+else
+    println("\n!!! ERROR: Input file not found at: $config_file")
+    println("Usage: julia src/Main.jl [config.yaml]")
+end
+"// # FILE: .\src\Core\Boundary.jl";
+
+
+module Boundary 
+
+using JSON 
+using SparseArrays 
+using LinearAlgebra 
+using Base.Threads
+using ..Element
+
+export get_bc_indicator, reduce_system, apply_external_forces!, add_self_weight!, compute_global_thermal_forces!
+
+""" 
+    get_affected_nodes(spec, nodes) 
+
+Returns an array of *final* node indices affected by this BC specification `spec`. 
+""" 
+function get_affected_nodes(spec::AbstractDict, nodes::Matrix{Float32}) 
+      
+    nNodes = size(nodes, 1) 
+
+    # 1) If user gave "node" 
+    if haskey(spec, "node") 
+        raw = spec["node"] 
+        if isa(raw, Integer) 
+            idx = clamp(raw, 1, nNodes) 
+            return [idx] 
+        elseif isa(raw, AbstractVector) 
+            node_list = Int[] 
+            for r in raw 
+                push!(node_list, clamp(r, 1, nNodes)) 
+            end 
+            return unique(node_list) 
+        else 
+            error("'node' must be an integer or an array of integers") 
+        end 
+    end 
+
+    # 2) If user gave "location" 
+    if haskey(spec, "location") 
+        loc_array = spec["location"] 
+        if length(loc_array) < 3 
+            error("Location specification must have at least 3 components (x,y,z)") 
+        end 
+        return get_nodes_by_location(loc_array, nodes) 
+    end 
+
+    error("Specification must include either 'node' or 'location'") 
+end 
+
+""" 
+    get_nodes_by_location(loc_array, nodes) 
+
+Find nodes whose (x,y,z) coordinates match the "location" pattern. 
+""" 
+function get_nodes_by_location(loc_array::AbstractVector, nodes::Matrix{Float32}) 
+    xvals = @view nodes[:, 1] 
+    yvals = @view nodes[:, 2] 
+    zvals = @view nodes[:, 3] 
+
+    xmin, xmax = extrema(xvals) 
+    ymin, ymax = extrema(yvals) 
+    zmin, zmax = extrema(zvals) 
+
+    xspec = loc_array[1] 
+    yspec = loc_array[2] 
+    zspec = loc_array[3] 
+
+    xmask = interpret_location_component(xspec, xvals, xmin, xmax) 
+    ymask = interpret_location_component(yspec, yvals, ymin, ymax) 
+    zmask = interpret_location_component(zspec, zvals, zmin, zmax) 
+
+    return findall(xmask .& ymask .& zmask) 
+end 
+
+""" 
+    interpret_location_component(spec, coords, cmin, cmax) 
+""" 
+function interpret_location_component(spec, 
+                                      coords::AbstractVector{Float32}, 
+                                      cmin::Float32, cmax::Float32) 
+    nNodes = length(coords) 
+    mask = falses(nNodes) 
+      
+    tol = Float32(1e-4) * max(Float32(1.0), abs(cmax - cmin)) 
+
+    if spec == ":" 
+        return trues(nNodes) 
+          
+    elseif isa(spec, Number) 
+        val = resolve_coordinate_value(spec, cmin, cmax) 
+          
+        @inbounds for i in 1:nNodes 
+            if abs(coords[i] - val) <= tol 
+                mask[i] = true 
+            end 
+        end 
+
+    elseif isa(spec, String) && endswith(spec, "%") 
+        frac = parse(Float32, replace(spec, "%"=>"")) / Float32(100.0) 
+        frac = clamp(frac, Float32(0.0), Float32(1.0)) 
+        val = Float32(cmin + frac*(cmax - cmin)) 
+          
+        @inbounds for i in 1:nNodes 
+            if abs(coords[i] - val) <= tol 
+                mask[i] = true 
+            end 
+        end 
+          
+    else 
+        error("Invalid location component: $spec") 
+    end 
+
+    return mask 
+end 
+
+function resolve_coordinate_value(spec, cmin::Float32, cmax::Float32)
+    if isa(spec, Number)
+        if spec >= Float32(0.0) && spec <= Float32(1.0) 
+            return Float32(cmin + spec*(cmax - cmin)) 
+        else 
+            return Float32(spec) 
+        end
+    elseif isa(spec, String) && endswith(spec, "%")
+        frac = parse(Float32, replace(spec, "%"=>"")) / Float32(100.0) 
+        frac = clamp(frac, Float32(0.0), Float32(1.0)) 
+        return Float32(cmin + frac*(cmax - cmin))
+    end
+    return Float32(cmin) 
+end
+
+""" 
+    get_bc_indicator(nNodes, nodes, bc_data; T=Float32) 
+""" 
+function get_bc_indicator(nNodes::Int, 
+                          nodes::Matrix{Float32}, 
+                          bc_data::Vector{Any};  
+                          T::Type{<:AbstractFloat} = Float32) 
+
+    bc_indicator = zeros(T, nNodes, 3) 
+      
+    for bc in bc_data 
+        dofs = bc["DoFs"] 
+          
+        for dof in dofs 
+            if dof < 1 || dof > 3 
+                error("Invalid DoF index: $dof (must be 1..3).") 
+            end 
+        end 
+
+        affected = get_affected_nodes(bc, nodes) 
+        for nd in affected 
+            for d in dofs 
+                bc_indicator[nd, d] = one(T) 
+            end 
+        end 
+    end 
+
+    return bc_indicator 
+end 
+
+""" 
+    reduce_system(K, F, bc_data, nodes, elements) 
+""" 
+function reduce_system(K::SparseMatrixCSC{Float32,Int}, 
+                       F::Vector{Float32}, 
+                       bc_data::Vector{Any},  
+                       nodes::Matrix{Float32}, 
+                       elements::Matrix{Int}) 
+
+    nNodes = size(nodes, 1) 
+    ndof   = 3*nNodes 
+    constrained = falses(ndof) 
+
+    for bc in bc_data 
+        dofs = bc["DoFs"] 
+        affected = get_affected_nodes(bc, nodes) 
+          
+        for nd in affected 
+            for d in dofs 
+                gdof = 3*(nd-1) + d 
+                constrained[gdof] = true 
+                F[gdof] = Float32(0.0)  
+            end 
+        end 
+    end 
+
+    free_indices = findall(!, constrained) 
+    K_reduced = K[free_indices, free_indices] 
+    F_reduced = F[free_indices] 
+      
+    return K_reduced, F_reduced, free_indices 
+end 
+
+function find_nearest_node(target_coords::Vector{Float32}, nodes::Matrix{Float32})
+    nNodes = size(nodes, 1)
+    best_idx = -1
+    min_dist_sq = Inf32
+
+    @inbounds for i in 1:nNodes
+        dx = nodes[i, 1] - target_coords[1]
+        dy = nodes[i, 2] - target_coords[2]
+        dz = nodes[i, 3] - target_coords[3]
+        dist_sq = dx*dx + dy*dy + dz*dz
+
+        if dist_sq < (min_dist_sq - 1e-9)
+            min_dist_sq = dist_sq
+            best_idx = i
+        elseif abs(dist_sq - min_dist_sq) <= 1e-9
+            if nodes[i, 1] > nodes[best_idx, 1]
+                best_idx = i
+            elseif nodes[i, 1] == nodes[best_idx, 1]
+                if nodes[i, 2] > nodes[best_idx, 2]
+                    best_idx = i
+                elseif nodes[i, 2] == nodes[best_idx, 2]
+                    if nodes[i, 3] > nodes[best_idx, 3]
+                        best_idx = i
+                    end
+                end
+            end
+        end
+    end
+    return best_idx
+end
+
+""" 
+    apply_external_forces!(F, forces_data, nodes, elements) 
+
+Processes external forces. Now supports compact YAML definitions (arrays) 
+and an optional 'name' field for logging.
+""" 
+function apply_external_forces!(F::Vector{T}, 
+                                 forces_data::Vector{Any},  
+                                 nodes::Matrix{Float32}, 
+                                 elements::Matrix{Int}) where T<:AbstractFloat 
+
+    x_bounds = extrema(view(nodes, :, 1))
+    y_bounds = extrema(view(nodes, :, 2))
+    z_bounds = extrema(view(nodes, :, 3))
+
+    println("Processing $(length(forces_data)) external forces...")
+
+    for force in forces_data 
+        
+        force_name = get(force, "name", "Unnamed Force")
+        
+        affected_nodes = get_affected_nodes(force, nodes) 
+
+        
+        if isempty(affected_nodes) && haskey(force, "location")
+            loc = force["location"]
+            is_point_spec = all(x -> x != ":", loc)
+            
+            if is_point_spec
+                tx = resolve_coordinate_value(loc[1], x_bounds[1], x_bounds[2])
+                ty = resolve_coordinate_value(loc[2], y_bounds[1], y_bounds[2])
+                tz = resolve_coordinate_value(loc[3], z_bounds[1], z_bounds[2])
+                target = Float32[tx, ty, tz]
+
+                nearest_idx = find_nearest_node(target, nodes)
+                if nearest_idx != -1
+                    affected_nodes = [nearest_idx]
+                    println("   -> Force '$force_name': mapped to nearest node #$nearest_idx")
+                end
+            end
+        else
+            println("   -> Force '$force_name': mapped to $(length(affected_nodes)) nodes")
+        end
+        
+        if isempty(affected_nodes) 
+            continue 
+        end 
+          
+        f_raw = force["F"] 
+        f_arr = zeros(T, 3) 
+        len_to_copy = min(length(f_raw), 3) 
+        f_arr[1:len_to_copy] = T.(f_raw[1:len_to_copy])  
+
+        # If user gave "location", we spread the total force among the matched nodes 
+        scale_factor = haskey(force, "location") ? (one(T) / length(affected_nodes)) : one(T) 
+
+        for nd in affected_nodes 
+            for i in 1:3 
+                global_dof = 3*(nd-1) + i 
+                F[global_dof] += scale_factor * f_arr[i] 
+            end 
+        end 
+    end 
+
+    return F 
+end 
+
+"""
+    add_self_weight!(F, density, material_density, gravity_scale, elements, dx, dy, dz, g_accel)
+
+Calculates the gravitational body force for each element and distributes it 
+to the element nodes. 
+    Force_elem = Volume * rho_material * rho_element * g_accel
+    Direction = Negative Y
+"""
+function add_self_weight!(F::Vector{T}, 
+                          density::Vector{T}, 
+                          material_density::T, 
+                          gravity_scale::T,
+                          elements::Matrix{Int},
+                          dx::T, dy::T, dz::T,
+                          g_accel::T) where T<:AbstractFloat
+
+    elem_vol = dx * dy * dz
+    
+    
+    base_weight = elem_vol * material_density * g_accel * gravity_scale
+    
+    
+    node_factor = base_weight / T(8.0)
+    
+    
+    n_threads = Threads.nthreads()
+    ndof = length(F)
+    F_local = [zeros(T, ndof) for _ in 1:n_threads]
+
+    nElem = length(density)
+
+    Threads.@threads for e in 1:nElem
+        rho = density[e]
+        if rho > 1e-6 
+            tid = Threads.threadid()
+            
+            
+            fy_node = -1.0f0 * node_factor * rho
+            
+            conn = view(elements, e, :)
+            for i in 1:8
+                node_idx = conn[i]
+                
+                gdof_y = 3*(node_idx-1) + 2
+                F_local[tid][gdof_y] += fy_node
+            end
+        end
+    end
+
+    
+    for t in 1:n_threads
+        F .+= F_local[t]
+    end
+end
+
+"""
+    compute_global_thermal_forces!(F_total, nodes, elements, alpha_field, delta_T, E, nu, density)
+
+Calculates thermal forces for all elements and adds them to the total force vector.
+"""
+function compute_global_thermal_forces!(F_total::Vector{Float32}, 
+                                        nodes::Matrix{Float32}, 
+                                        elements::Matrix{Int},
+                                        alpha_field::Vector{Float32},
+                                        delta_T::Float32,
+                                        E::Float32, 
+                                        nu::Float32,
+                                        density::Vector{Float32})
+
+    if abs(delta_T) < 1e-6
+        return
+    end
+
+    nElem = size(elements, 1)
+    ndof = length(F_total)
+    n_threads = Threads.nthreads()
+    
+    
+    F_local = [zeros(Float32, ndof) for _ in 1:n_threads]
+
+    Threads.@threads for e in 1:nElem
+        
+        if density[e] > 1e-4 && abs(alpha_field[e]) > 1e-9
+            tid = Threads.threadid()
+            
+            
+            conn = view(elements, e, :)
+            el_nodes = nodes[conn, :]
+            
+            
+            # Note: We scale Young's modulus by density (SIMP) for stiffness, 
+            
+            f_elem = Element.compute_element_thermal_force(el_nodes, E * density[e], nu, alpha_field[e], delta_T)
+            
+            
+            for i in 1:8
+                node_idx = conn[i]
+                base_dof = 3 * (node_idx - 1)
+                F_local[tid][base_dof + 1] += f_elem[3*(i-1) + 1]
+                F_local[tid][base_dof + 2] += f_elem[3*(i-1) + 2]
+                F_local[tid][base_dof + 3] += f_elem[3*(i-1) + 3]
+            end
+        end
+    end
+
+    
+    for t in 1:n_threads
+        F_total .+= F_local[t]
+    end
+end
+
+end
+"// # FILE: .\src\Core\Element.jl";
+
+
+module Element
+
+using LinearAlgebra
+export NAT_COORDS, shape_functions, material_matrix, hex_element_stiffness, get_canonical_stiffness, get_scalar_canonical_matrices, compute_element_thermal_force
+
+const NAT_COORDS = Float32[
+    -1 -1 -1;
+     1 -1 -1;
+     1  1 -1;
+    -1  1 -1;
+    -1 -1  1;
+     1 -1  1;
+     1  1  1;
+    -1  1  1
+]
+
+"""
+    shape_functions(xi, eta, zeta)
+Computes the trilinear shape functions and their derivatives.
+"""
+function shape_functions(xi, eta, zeta)
+    N  = zeros(Float32, 8)
+    dN = zeros(Float32, 8, 3)
+     
+    p1 = Float32(0.125)
+     
+    @inbounds for i in 1:8
+        xi_i, eta_i, zeta_i = NAT_COORDS[i,1], NAT_COORDS[i,2], NAT_COORDS[i,3]
+        
+        term_xi   = (1.0f0 + xi*xi_i)
+        term_eta  = (1.0f0 + eta*eta_i)
+        term_zeta = (1.0f0 + zeta*zeta_i)
+        
+        N[i] = p1 * term_xi * term_eta * term_zeta
+        
+        dN[i,1] = p1 * xi_i * term_eta * term_zeta
+        dN[i,2] = p1 * term_xi * eta_i * term_zeta
+        dN[i,3] = p1 * term_xi * term_eta * zeta_i
+    end
+    return N, dN
+end
+
+function material_matrix(E::Float32, nu::Float32)
+    inv_den = 1.0f0 / ((1.0f0 + nu) * (1.0f0 - 2.0f0 * nu))
+    factor = E * inv_den
+     
+    c1 = (1.0f0 - nu) * factor
+    c2 = nu * factor
+    c3 = ((1.0f0 - 2.0f0 * nu) / 2.0f0) * factor
+     
+    D = zeros(Float32, 6, 6)
+    D[1,1] = c1; D[1,2] = c2; D[1,3] = c2
+    D[2,1] = c2; D[2,2] = c1; D[2,3] = c2
+    D[3,1] = c2; D[3,2] = c2; D[3,3] = c1
+     
+    D[4,4] = c3
+    D[5,5] = c3
+    D[6,6] = c3
+    return D
+end
+
+function hex_element_stiffness(nodes::AbstractMatrix{Float32}, E::Float32, nu::Float32)
+    D = material_matrix(E, nu)
+    ke = zeros(Float32, 24, 24)
+    a = 1.0f0 / sqrt(3.0f0)
+    gauss_pts = Float32[-a, a]
+    B = zeros(Float32, 6, 24)
+
+    @inbounds for xi in gauss_pts, eta in gauss_pts, zeta in gauss_pts
+        _, dN_dxi = shape_functions(xi, eta, zeta)
+        J    = transpose(dN_dxi) * nodes
+        detJ = det(J)
+        if detJ <= 0.0f0 
+            error("Non-positive Jacobian detected.")
+        end
+        invJ = inv(J)
+        dN_dx = dN_dxi * transpose(invJ)
+
+        fill!(B, 0.0f0)
+        for i in 1:8
+            idx = 3*(i-1)
+            dN_i = view(dN_dx, i, :)
+            B[1, idx+1] = dN_i[1]; B[2, idx+2] = dN_i[2]; B[3, idx+3] = dN_i[3]
+            B[4, idx+1] = dN_i[2]; B[4, idx+2] = dN_i[1]
+            B[5, idx+2] = dN_i[3]; B[5, idx+3] = dN_i[2]
+            B[6, idx+1] = dN_i[3]; B[6, idx+3] = dN_i[1]
+        end
+        ke .+= transpose(B) * D * B * detJ
+    end
+    return ke
+end
+
+function get_canonical_stiffness(dx::Float32, dy::Float32, dz::Float32, nu::Float32)
+    nodes = Float32[
+        0.0 0.0 0.0; dx  0.0 0.0; dx  dy  0.0; 0.0 dy  0.0;
+        0.0 0.0 dz;  dx  0.0 dz;  dx  dy  dz;  0.0 dy  dz
+    ]
+    nodes .-= [dx/2 dy/2 dz/2]
+    return hex_element_stiffness(nodes, 1.0f0, nu)
+end
+
+function get_scalar_canonical_matrices(dx::Float32, dy::Float32, dz::Float32)
+    nodes = Float32[
+        -dx/2 -dy/2 -dz/2; dx/2 -dy/2 -dz/2; dx/2  dy/2 -dz/2; -dx/2  dy/2 -dz/2;
+        -dx/2 -dy/2  dz; dx/2 -dy/2  dz; dx/2  dy/2  dz; -dx/2  dy/2  dz
+    ]
+    Ke = zeros(Float32, 8, 8)
+    Me = zeros(Float32, 8, 8)
+    a = 1.0f0 / sqrt(3.0f0)
+    gauss_pts = Float32[-a, a]
+
+    @inbounds for xi in gauss_pts, eta in gauss_pts, zeta in gauss_pts
+        N, dN_dxi = shape_functions(xi, eta, zeta)
+        J = transpose(dN_dxi) * nodes
+        detJ = det(J)
+        invJ = inv(J)
+        dN_dx = dN_dxi * transpose(invJ)
+        weight = detJ 
+        Ke .+= (dN_dx * transpose(dN_dx)) .* weight
+        Me .+= (N * transpose(N)) .* weight
+    end
+    return Ke, Me
+end
+
+"""
+    compute_element_thermal_force(nodes, E, nu, alpha, delta_T)
+
+Computes equivalent nodal forces due to thermal expansion.
+"""
+function compute_element_thermal_force(nodes::AbstractMatrix{Float32}, E::Float32, nu::Float32, alpha::Float32, delta_T::Float32)
+    f_th = zeros(Float32, 24)
+    
+    
+    if abs(alpha) < 1e-9 || abs(delta_T) < 1e-9
+        return f_th
+    end
+
+    D = material_matrix(E, nu)
+    
+    
+    thermal_strain = zeros(Float32, 6)
+    epsilon_mag = alpha * delta_T
+    thermal_strain[1] = epsilon_mag
+    thermal_strain[2] = epsilon_mag
+    thermal_strain[3] = epsilon_mag
+    
+    
+    sigma_th = D * thermal_strain
+
+    a = 1.0f0 / sqrt(3.0f0)
+    gauss_pts = Float32[-a, a]
+    B = zeros(Float32, 6, 24)
+
+    @inbounds for xi in gauss_pts, eta in gauss_pts, zeta in gauss_pts
+        _, dN_dxi = shape_functions(xi, eta, zeta)
+        J    = transpose(dN_dxi) * nodes
+        detJ = det(J)
+        invJ = inv(J)
+        dN_dx = dN_dxi * transpose(invJ)
+
+        fill!(B, 0.0f0)
+        for i in 1:8
+            idx = 3*(i-1)
+            dN_i = view(dN_dx, i, :)
+            B[1, idx+1] = dN_i[1]; B[2, idx+2] = dN_i[2]; B[3, idx+3] = dN_i[3]
+            B[4, idx+1] = dN_i[2]; B[4, idx+2] = dN_i[1]
+            B[5, idx+2] = dN_i[3]; B[5, idx+3] = dN_i[2]
+            B[6, idx+1] = dN_i[3]; B[6, idx+3] = dN_i[1]
+        end
+        
+        
+        f_th .+= transpose(B) * sigma_th * detJ
+    end
+    
+    return f_th
+end
+
+end
+"// # FILE: .\src\Core\Stress.jl";
+// # FILE: .\src\Core\Stress.jl";
+
+module Stress 
+ 
+using LinearAlgebra 
+using Base.Threads
+using ..Element 
+export compute_stress_field 
+ 
+function compute_element_stress(element_nodes::Array{Float32,2}, 
+                                 element_disp::Array{Float32,1}, 
+                                 E::Float32, nu::Float32) 
+    D = Element.material_matrix(E, nu) 
+    xi, eta, zeta = 0.0f0, 0.0f0, 0.0f0
+    _, dN_dxi = Element.shape_functions(xi, eta, zeta) 
+    J = transpose(dN_dxi)*element_nodes 
+    detJ = det(J) 
+    if detJ <= 0.0f0; error("Non-positive Jacobian!"); end 
+    invJ = inv(J) 
+    dN_dx = dN_dxi * transpose(invJ) 
+ 
+    B = zeros(Float32, 6, 24) 
+    for i in 1:8 
+        idx = 3*(i-1)+1 
+        dN_i = dN_dx[i, :] 
+        B[1, idx]    = dN_i[1]; B[2, idx+1] = dN_i[2]; B[3, idx+2] = dN_i[3] 
+        B[4, idx]    = dN_i[2]; B[4, idx+1] = dN_i[1] 
+        B[5, idx+1] = dN_i[3]; B[5, idx+2] = dN_i[2] 
+        B[6, idx]    = dN_i[3]; B[6, idx+2] = dN_i[1] 
+    end 
+ 
+    strain = B * element_disp 
+    stress_voigt = D * strain 
+ 
+    σ = zeros(Float32, 3, 3) 
+    σ[1,1] = stress_voigt[1]; σ[2,2] = stress_voigt[2]; σ[3,3] = stress_voigt[3]    
+    σ[1,2] = stress_voigt[4]; σ[2,1] = stress_voigt[4]    
+    σ[2,3] = stress_voigt[5]; σ[3,2] = stress_voigt[5]    
+    σ[1,3] = stress_voigt[6]; σ[3,1] = stress_voigt[6]    
+    return σ 
+end 
+ 
+function compute_principal_data(σ::Matrix{Float32}) 
+    F = eigen(σ)
+    perm = sortperm(F.values, rev=true)
+    principal_stresses = F.values[perm]
+    principal_vectors  = F.vectors[:, perm]
+    max_dir = principal_vectors[:, 1]
+
+    σxx, σyy, σzz = σ[1,1], σ[2,2], σ[3,3]
+    σxy, σyz, σxz = σ[1,2], σ[2,3], σ[1,3]
+    vm = sqrt(0.5f0 * ((σxx-σyy)^2 + (σyy-σzz)^2 + (σzz-σxx)^2) + 3.0f0*(σxy^2 + σyz^2 + σxz^2))  
+ 
+    return principal_stresses, vm, max_dir
+end 
+ 
+function compute_stress_field(nodes, elements, U, E::Float32, nu::Float32, density::Vector{Float32}) 
+    nElem = size(elements, 1) 
+    
+    
+    principal_field      = zeros(Float32, 3, nElem) 
+    vonmises_field       = zeros(Float32, nElem) 
+    full_stress_voigt    = zeros(Float32, 6, nElem) 
+    l1_stress_norm_field = zeros(Float32, nElem)  
+    principal_dir_field  = zeros(Float32, 3, nElem)
+
+    
+    Threads.@threads for e in 1:nElem 
+        conn = elements[e, :] 
+        element_nodes = nodes[conn, :] 
+        
+        
+        element_disp = zeros(Float32, 24) 
+        for i in 1:8 
+            global_node = conn[i] 
+            base_idx = 3*(global_node-1)
+            element_disp[3*(i-1)+1] = U[base_idx+1]
+            element_disp[3*(i-1)+2] = U[base_idx+2]
+            element_disp[3*(i-1)+3] = U[base_idx+3]
+        end 
+ 
+        
+        
+        
+        if density[e] > 1e-6
+            E_local = E * density[e] 
+            σ = compute_element_stress(element_nodes, element_disp, E_local, nu) 
+            (principal, vm, max_dir) = compute_principal_data(σ) 
+     
+            l1_norm = abs(principal[1]) + abs(principal[2]) + abs(principal[3]) 
+                
+            principal_field[:, e] = principal 
+            vonmises_field[e]        = vm 
+            l1_stress_norm_field[e] = l1_norm  
+            principal_dir_field[:, e] = max_dir
+            full_stress_voigt[:, e] .= (σ[1,1], σ[2,2], σ[3,3], σ[1,2], σ[2,3], σ[1,3]) 
+        end
+    end 
+    return principal_field, vonmises_field, full_stress_voigt, l1_stress_norm_field, principal_dir_field
+end 
+ 
+end
+"// # FILE: .\src\IO\Configuration.jl";
+
+module Configuration 
+ 
+using YAML  
+using JSON
+using ..Mesh  
+using ..Helpers 
+using ..MeshShapeProcessing 
+ 
+export load_configuration, setup_geometry, initialize_density_field, load_checkpoint
+ 
+""" 
+    load_configuration(filename::String) 
+ 
+Load and parse a JSON/YAML configuration file. 
+""" 
+function load_configuration(filename::String) 
+    if !isfile(filename) 
+        error("Configuration file '$(filename)' not found") 
+    end 
+      
+    return YAML.load_file(filename) 
+end 
+
+"""
+    load_checkpoint(filename::String)
+
+Reads a .bin checkpoint file. 
+Returns: (config, density, restart_iter, restart_radius, restart_threshold)
+"""
+function load_checkpoint(filename::String)
+    println(">>> [Checkpoint] Reading restart data from: $filename")
+    
+    if !isfile(filename); error("Checkpoint file not found."); end
+
+    data = open(filename, "r") do io
+        
+        magic = read(io, UInt32) # 0x48455841 "HEXA"
+        version = read(io, UInt32)
+        
+        if magic != 0x48455841
+            error("Invalid file format. Not a HEXA checkpoint.")
+        end
+
+        iter = Int(read(io, Int32))
+        radius = Float32(read(io, Float32))
+        threshold = Float32(read(io, Float32))
+        
+        count = Int(read(io, UInt32))
+        dx = read(io, Float32)
+        dy = read(io, Float32)
+        dz = read(io, Float32)
+
+        seek(io, position(io) + (count * 3 * 4))
+
+        density = Vector{Float32}(undef, count)
+        read!(io, density)
+
+        seek(io, position(io) + (count * 4))
+
+        json_len = Int(read(io, UInt32))
+        json_bytes = Vector{UInt8}(undef, json_len)
+        read!(io, json_bytes)
+        
+        config_str = String(json_bytes)
+        config = JSON.parse(config_str)
+
+        println("    Restarting at Iteration: $iter")
+        println("    Filter Radius: $radius")
+        println("    Threshold: $threshold")
+        println("    Elements: $count")
+
+        return (config, density, iter, radius, threshold)
+    end
+
+    return data
+end
+ 
+""" 
+    setup_geometry(config) 
+ 
+Process the geometry configuration and return parameters for mesh generation. 
+""" 
+function setup_geometry(config) 
+      
+    length_x = config["geometry"]["length_x"] 
+    length_y = config["geometry"]["length_y"] 
+    length_z = config["geometry"]["length_z"] 
+     
+    raw_count = config["geometry"]["target_elem_count"]
+    target_elem_count = if isa(raw_count, String)
+        parse(Int, replace(raw_count, "_" => ""))
+    else
+        Int(raw_count)
+    end
+      
+    println("Domain dimensions:") 
+    println("  X: 0 to $(length_x)") 
+    println("  Y: 0 to $(length_y)") 
+    println("  Z: 0 to $(length_z)") 
+      
+    shapes = Any[] 
+     
+    for (key, shape) in config["geometry"] 
+        if key in ["length_x", "length_y", "length_z", "target_elem_count", "shape_notes", "nElem_x_computed", "nElem_y_computed", "nElem_z_computed", "dx_computed", "dy_computed", "dz_computed", "max_domain_dim"] 
+            continue 
+        end 
+          
+        if haskey(shape, "type") 
+            
+            # The 'stiffness_ratio' determines the behavior.
+            push!(shapes, shape)
+        end 
+    end 
+ 
+    println("Found $(length(shapes)) geometric modification shapes.") 
+      
+    nElem_x, nElem_y, nElem_z, dx, dy, dz, actual_elem_count = 
+        Helpers.calculate_element_distribution(length_x, length_y, length_z, target_elem_count) 
+      
+    println("Mesh parameters:") 
+    println("  Domain: $(length_x) x $(length_y) x $(length_z) meters") 
+    println("  Elements: $(nElem_x) x $(nElem_y) x $(nElem_z) = $(actual_elem_count)") 
+    println("  Element sizes: $(dx) x $(dy) x $(dz)") 
+      
+    max_domain_dim = max(length_x, length_y, length_z) 
+ 
+    return ( 
+        nElem_x = nElem_x,  
+        nElem_y = nElem_y,  
+        nElem_z = nElem_z, 
+        dx = dx, 
+        dy = dy, 
+        dz = dz, 
+        shapes = shapes, 
+        actual_elem_count = actual_elem_count, 
+        max_domain_dim = Float32(max_domain_dim)  
+    ) 
+end 
+ 
+""" 
+    initialize_density_field(nodes, elements, shapes, config)
+ 
+Processes geometric shapes to set the initial density array AND the alpha (thermal expansion) field.
+Returns `density`, `original_density`, `protected_elements_mask`, and `alpha_field`.
+""" 
+function initialize_density_field(nodes::Matrix{Float32}, 
+                                  elements::Matrix{Int}, 
+                                  shapes::Vector{Any}, 
+                                  config::Dict) 
+      
+    min_density = Float32(get(config["optimization_parameters"], "min_density", 1e-3)) 
+ 
+    nElem = size(elements, 1)
+    println("Processing geometric density and thermal modifiers...") 
+     
+    
+    density = ones(Float32, nElem) 
+    alpha_field = zeros(Float32, nElem)
+
+    
+    MeshShapeProcessing.apply_geometric_modifiers!(density, alpha_field, nodes, elements, shapes, min_density)
+      
+    println("Element density and thermal processing complete. Min Density floor: $(min_density)") 
+ 
+    original_density = copy(density) 
+      
+    protected_elements_mask = (original_density .!= 1.0f0) 
+    num_protected = sum(protected_elements_mask) 
+    println("Found $(num_protected) protected elements (voids/rigid/thermal) that will not be iterated.") 
+ 
+    return density, original_density, protected_elements_mask, alpha_field
+end 
+ 
+end
+"// # FILE: .\src\IO\ExportVTK.jl";
+
+module ExportVTK 
+
+using Printf 
+
+export export_mesh, export_solution 
+
+function export_mesh(nodes::Matrix{Float32}, 
+                     elements::Matrix{Int}; 
+                     bc_indicator=nothing, 
+                     filename::String="mesh_output.vtu")
+      
+    if !endswith(lowercase(filename), ".vtk") && !endswith(lowercase(filename), ".vtu") 
+        filename *= ".vtk" 
+    end
+    
+    
+end 
+
+function export_solution(nodes::Matrix{Float32}, 
+                         elements::Matrix{Int}, 
+                         U_full::Vector{Float32}, 
+                         F::Vector{Float32}, 
+                         bc_indicator::Matrix{Float32}, 
+                         principal_field::Matrix{Float32}, 
+                         vonmises_field::Vector{Float32}, 
+                         full_stress_voigt::Matrix{Float32}, 
+                         l1_stress_norm_field::Vector{Float32},
+                         principal_dir_field::Matrix{Float32}; 
+                         density::Union{Vector{Float32}, Nothing}=nothing,
+                         scale::Float32=Float32(1.0),
+                         threshold::Float32=0.01f0, 
+                         filename::String="solution_output.vtu") 
+
+    function sanitize_data(data) 
+        data = replace(data, NaN => Float32(0.0), Inf => Float32(0.0), -Inf => Float32(0.0)) 
+        max_val = maximum(abs.(data)) 
+        if max_val > Float32(1.0e10) 
+            return clamp.(data, Float32(-1.0e10), Float32(1.0e10)) 
+        end 
+        return data 
+    end 
+      
+    U_full = sanitize_data(U_full) 
+    F_sanitized = sanitize_data(F) 
+    bc_sanitized = sanitize_data(bc_indicator)
+    nodes = sanitize_data(nodes) 
+    
+    l1_stress_norm_field = sanitize_data(l1_stress_norm_field) 
+
+    nNodes = size(nodes, 1) 
+    nElem  = size(elements, 1) 
+
+    valid_elements = Int[] 
+    
+    
+    export_threshold = threshold
+
+    if density !== nothing
+        for e = 1:nElem 
+            if density[e] >= export_threshold 
+                push!(valid_elements, e) 
+            end
+        end 
+    else
+        valid_elements = collect(1:nElem)
+    end
+
+    nElem_valid = length(valid_elements) 
+
+    displacement = zeros(Float32, nNodes, 3) 
+    forces_vec   = zeros(Float32, nNodes, 3)
+    bcs_vec      = zeros(Float32, nNodes, 3)
+      
+    for i in 1:nNodes 
+        base_idx = 3*(i-1)
+        if base_idx + 3 <= length(U_full) 
+            displacement[i, 1] = U_full[base_idx + 1] 
+            displacement[i, 2] = U_full[base_idx + 2] 
+            displacement[i, 3] = U_full[base_idx + 3] 
+        end 
+        
+        if base_idx + 3 <= length(F_sanitized)
+            forces_vec[i, 1] = F_sanitized[base_idx + 1]
+            forces_vec[i, 2] = F_sanitized[base_idx + 2]
+            forces_vec[i, 3] = F_sanitized[base_idx + 3]
+        end
+
+        if i <= size(bc_sanitized, 1)
+            bcs_vec[i, 1] = bc_sanitized[i, 1]
+            bcs_vec[i, 2] = bc_sanitized[i, 2]
+            bcs_vec[i, 3] = bc_sanitized[i, 3]
+        end
+    end 
+    
+    disp_mag = sqrt.(sum(displacement.^2, dims=2))[:,1]       
+
+    l1_stress_norm_field_valid = l1_stress_norm_field[valid_elements] 
+    vonmises_field_valid = vonmises_field[valid_elements]
+    
+    if endswith(lowercase(filename), ".vtu"); combined_filename = filename[1:end-4] * ".vtk"
+    elseif !endswith(lowercase(filename), ".vtk"); combined_filename = filename * ".vtk"
+    else; combined_filename = filename; end
+
+    try 
+        open(combined_filename, "w") do file 
+            write(file, "# vtk DataFile Version 3.0\n") 
+            write(file, "HEXA FEM Solution (Undeformed)\n") 
+            write(file, "BINARY\n") 
+            write(file, "DATASET UNSTRUCTURED_GRID\n") 
+              
+            write(file, "POINTS $(nNodes) float\n") 
+            coords_flat = vec(nodes') 
+            write(file, hton.(Float32.(coords_flat))) 
+              
+            write(file, "\nCELLS $(nElem_valid) $(nElem_valid * 9)\n") 
+            cell_data = Vector{Int32}(undef, nElem_valid * 9)
+            idx = 1
+            for e in valid_elements
+                cell_data[idx] = Int32(8) 
+                idx += 1
+                for j in 1:8
+                    cell_data[idx] = Int32(elements[e, j] - 1) 
+                    idx += 1
+                end
+            end
+            write(file, hton.(cell_data)) 
+              
+            write(file, "\nCELL_TYPES $(nElem_valid)\n") 
+            cell_types = fill(Int32(12), nElem_valid) 
+            write(file, hton.(cell_types)) 
+              
+            write(file, "\nPOINT_DATA $(nNodes)\n") 
+              
+            write(file, "VECTORS Displacement float\n") 
+            disp_flat = vec(displacement')
+            write(file, hton.(Float32.(disp_flat))) 
+              
+            write(file, "\nVECTORS External_Forces float\n")
+            forces_flat = vec(forces_vec')
+            write(file, hton.(Float32.(forces_flat)))
+
+            write(file, "\nVECTORS Boundary_Conditions float\n")
+            bcs_flat = vec(bcs_vec')
+            write(file, hton.(Float32.(bcs_flat)))
+
+            write(file, "\nSCALARS Displacement_Magnitude float 1\n") 
+            write(file, "LOOKUP_TABLE default\n") 
+            write(file, hton.(Float32.(disp_mag))) 
+              
+            write(file, "\nCELL_DATA $(nElem_valid)\n") 
+              
+            write(file, "SCALARS l1_stress_norm float 1\n") 
+            write(file, "LOOKUP_TABLE default\n") 
+            write(file, hton.(Float32.(l1_stress_norm_field_valid))) 
+            
+            write(file, "\nSCALARS Von_Mises float 1\n") 
+            write(file, "LOOKUP_TABLE default\n") 
+            write(file, hton.(Float32.(vonmises_field_valid))) 
+              
+            if density !== nothing
+                write(file, "\nSCALARS Element_Density float 1\n")
+                write(file, "LOOKUP_TABLE default\n")
+                density_valid = density[valid_elements]
+                write(file, hton.(Float32.(density_valid)))
+            end
+        end 
+    catch e 
+        @error "Failed to save combined VTK file: $e" 
+    end 
+    return nothing 
+end 
+
+end
+"// # FILE: .\src\IO\Marching.jl";
+using JSON3 
+using Statistics 
+using Printf 
+import MarchingCubes: MC, march 
+ 
+const LX = 60.0f0 
+const LY = 20.0f0 
+const LZ = 0.1f0 
+ 
+const JSON_FILE_NAME = "iter_20_config_element_data.json" 
+const JSON_FILE_PATH = joinpath(@__DIR__, "RESULTS", JSON_FILE_NAME)  
+ 
+const ISOSURFACE_DENSITY = 0.8f0 
+const STL_OUTPUT_FILE = "topopt_isosurface_80.stl" 
+ 
+function infer_mesh_and_load_density(filepath::String) 
+     
+    println("1. Loading element data and inferring mesh structure from: $filepath") 
+     
+    if !isfile(filepath) 
+        error("File not found at path: $filepath. Ensure the optimization run completed successfully and the 'RESULTS' folder is correctly placed relative to this script.") 
+    end 
+ 
+    data = JSON3.read(read(filepath, String)) 
+     
+    n_total_el_from_file = length(data) 
+ 
+    if n_total_el_from_file < 2 
+        error("Not enough elements in the result file to infer mesh size.") 
+    end 
+ 
+    density_field = Dict{Int, Float32}() 
+     
+    first_el_centroid = data[1]["centroid"] 
+    dx, dy, dz = 0.0f0, 0.0f0, 0.0f0 
+     
+    if length(data) >= 2 
+        second_el_centroid = data[2]["centroid"] 
+        dx = abs(second_el_centroid[1] - first_el_centroid[1]) 
+    end 
+ 
+    cy1 = first_el_centroid[2] 
+    for i = 2:length(data) 
+        cy_i = data[i]["centroid"][2] 
+        if abs(cy_i - cy1) > 1e-6  
+            dy = abs(cy_i - cy1) 
+            break 
+        end 
+    end 
+     
+    cz1 = first_el_centroid[3] 
+    for i = 2:length(data) 
+        cz_i = data[i]["centroid"][3] 
+        if abs(cz_i - cz1) > 1e-6  
+            dz = abs(cz_i - cz1) 
+            break 
+        end 
+    end 
+ 
+    if dx < 1e-6 
+        dx_final = LX 
+        NX = 1 
+    else 
+        NX = round(Int, LX / dx) 
+        dx_final = LX / NX  
+    end 
+ 
+    if dy < 1e-6 
+        dy_final = LY 
+        NY = 1 
+    else 
+        NY = round(Int, LY / dy) 
+        dy_final = LY / NY 
+    end 
+     
+    if dz < 1e-6 
+        dz_final = LZ 
+        NZ = 1 
+    else 
+        NZ = round(Int, LZ / dz) 
+        dz_final = LZ / NZ 
+    end 
+ 
+    inferred_n_total_el = NX * NY * NZ 
+ 
+    if inferred_n_total_el != length(data) 
+        @warn "Inferred element count ($inferred_n_total_el) does not match file count ($(length(data))). Using file count for array size." 
+    end 
+     
+    println("   Inferred mesh dimensions: $(NX) x $(NY) x $(NZ) elements.") 
+    println("   Element size (dx, dy, dz): $(@sprintf("%.6f", dx_final)), $(@sprintf("%.6f", dy_final)), $(@sprintf("%.6f", dz_final))") 
+ 
+    for elem in data 
+        density = elem["young_modulus"] 
+        density_field[elem["element_id"]] = Float32(density) 
+    end 
+     
+    sorted_densities = [density_field[i] for i in 1:length(data)] 
+ 
+    x_coords = collect(Float32, range(0.0f0, stop=LX, length=NX + 1)) 
+    y_coords = collect(Float32, range(0.0f0, stop=LY, length=NY + 1)) 
+    z_coords = collect(Float32, range(0.0f0, stop=LZ, length=NZ + 1)) 
+ 
+    return sorted_densities, NX, NY, NZ, x_coords, y_coords, z_coords 
+end 
+ 
+function prepare_density_grid(densities::Vector{Float32}, NX::Int, NY::Int, NZ::Int) 
+    println("2. Preparing 3D density grid...") 
+     
+    node_densities = zeros(Float32, NX + 1, NY + 1, NZ + 1) 
+     
+    cell_densities = reshape(densities, NX, NY, NZ) 
+     
+    for k in 1:NZ 
+        for j in 1:NY 
+            for i in 1:NX 
+                node_densities[i, j, k] = cell_densities[i, j, k] 
+            end 
+        end 
+    end 
+ 
+    println("   Node grid of dimensions $(NX+1)x$(NY+1)x$(NZ+1) created from cell data.") 
+    return node_densities 
+end 
+ 
+function run_marching_cubes(density_grid::Array{Float32, 3}, x_coords::Vector{Float32}, y_coords::Vector{Float32}, z_coords::Vector{Float32}) 
+    println("3. Running Marching Cubes (Isosurface Extraction) at threshold $(ISOSURFACE_DENSITY)...") 
+     
+    mc_struct = MC( 
+        density_grid,  
+        Int;  
+        normal_sign=1, 
+        x=x_coords,  
+        y=y_coords,  
+        z=z_coords 
+    ) 
+ 
+    march(mc_struct, ISOSURFACE_DENSITY) 
+ 
+    vertices = mc_struct.vertices 
+    triangles = mc_struct.triangles 
+     
+    num_vertices = length(vertices) 
+    num_faces = length(triangles) 
+     
+    @printf("   Surface extracted: %d vertices, %d faces.\n", num_vertices, num_faces) 
+     
+    return (vertices, triangles) 
+end 
+ 
+function export_to_stl(result::Tuple) 
+    vertices = result[1] 
+    faces = result[2] 
+     
+    println("4. Exporting surface to ASCII STL file: $STL_OUTPUT_FILE") 
+     
+    open(STL_OUTPUT_FILE, "w") do io 
+        write(io, "solid topopt_model\n") 
+         
+        for face in faces 
+            v1 = vertices[face[1]] 
+            v2 = vertices[face[2]] 
+            v3 = vertices[face[3]] 
+             
+            e1 = (v2[1]-v1[1], v2[2]-v1[2], v2[3]-v1[3]) 
+            e2 = (v3[1]-v1[1], v3[2]-v1[2], v3[3]-v1[3]) 
+             
+            nx = e1[2]*e2[3] - e1[3]*e2[2] 
+            ny = e1[3]*e2[1] - e1[1]*e2[3] 
+            nz = e1[1]*e2[2] - e1[2]*e2[1] 
+             
+            mag = sqrt(nx^2 + ny^2 + nz^2) 
+            if mag > 1e-12 
+                nx /= mag 
+                ny /= mag 
+                nz /= mag 
+            else 
+                nx, ny, nz = 0.0, 0.0, 0.0 
+            end 
+             
+            @printf(io, "  facet normal %e %e %e\n", nx, ny, nz) 
+            write(io, "    outer loop\n") 
+             
+            @printf(io, "      vertex %e %e %e\n", v1[1], v1[2], v1[3]) 
+            @printf(io, "      vertex %e %e %e\n", v2[1], v2[2], v2[3]) 
+            @printf(io, "      vertex %e %e %e\n", v3[1], v3[2], v3[3]) 
+             
+            write(io, "    endloop\n") 
+            write(io, "  endfacet\n") 
+        end 
+         
+        write(io, "endsolid topopt_model\n") 
+    end 
+     
+    println("   Export complete. The file is ready for your CAD/viewer software.") 
+end 
+ 
+ 
+function main_postprocess() 
+    try 
+        densities, NX, NY, NZ, x_coords, y_coords, z_coords = infer_mesh_and_load_density(JSON_FILE_PATH) 
+         
+        density_grid = prepare_density_grid(densities, NX, NY, NZ) 
+         
+        surface_result = run_marching_cubes(density_grid, x_coords, y_coords, z_coords) 
+         
+        export_to_stl(surface_result) 
+         
+    catch e 
+        @error "An error occurred during post-processing." exception=(e, catch_backtrace()) 
+    end 
+end 
+ 
+main_postprocess() 
+"// # FILE: .\src\IO\Postprocessing.jl";
+
+
+module Postprocessing
+
+using JSON, Printf
+using ..Mesh
+using ..MeshUtilities 
+using ..ExportVTK
+import MarchingCubes: MC, march
+
+export export_iteration_results, export_smooth_watertight_stl
+
+"""
+    get_smooth_nodal_densities(density, elements, nNodes)
+    
+Averages element densities to nodes to create a smooth field for isosurface extraction.
+"""
+function get_smooth_nodal_densities(density::Vector{Float32}, elements::Matrix{Int}, nNodes::Int)
+    node_sums = zeros(Float32, nNodes)
+    node_counts = zeros(Int, nNodes)
+    nElem = length(density)
+    
+    @inbounds for e in 1:nElem
+        rho = density[e]
+        for i in 1:8
+            node_idx = elements[e, i]
+            node_sums[node_idx] += rho
+            node_counts[node_idx] += 1
+        end
+    end
+    nodal_density = zeros(Float32, nNodes)
+    @inbounds for i in 1:nNodes
+        if node_counts[i] > 0
+            nodal_density[i] = node_sums[i] / Float32(node_counts[i])
+        end
+    end
+    return nodal_density
+end
+
+function trilinear_interpolate(vals, xd::Float32, yd::Float32, zd::Float32)
+    c00 = vals[1]*(1f0-xd) + vals[2]*xd
+    c01 = vals[4]*(1f0-xd) + vals[3]*xd
+    c10 = vals[5]*(1f0-xd) + vals[6]*xd
+    c11 = vals[8]*(1f0-xd) + vals[7]*xd
+    c0 = c00*(1f0-yd) + c01*yd
+    c1 = c10*(1f0-yd) + c11*yd
+    return c0*(1f0-zd) + c1*zd
+end
+
+"""
+    export_smooth_watertight_stl(...)
+"""
+function export_smooth_watertight_stl(density::Vector{Float32}, geom, threshold::Float32, filename::String; subdivision_level::Int=1)
+    dir_path = dirname(filename)
+    if !isempty(dir_path) && !isdir(dir_path); mkpath(dir_path); end
+
+    NX, NY, NZ = geom.nElem_x, geom.nElem_y, geom.nElem_z
+    dx, dy, dz = geom.dx, geom.dy, geom.dz
+    
+    nodes_coarse, elements_coarse, _ = Mesh.generate_mesh(NX, NY, NZ; dx=dx, dy=dy, dz=dz)
+    nNodes_coarse = size(nodes_coarse, 1)
+    
+    if length(density) != size(elements_coarse, 1); return; end
+    
+    nodal_density_coarse = get_smooth_nodal_densities(density, elements_coarse, nNodes_coarse)
+    grid_coarse = reshape(nodal_density_coarse, (NX+1, NY+1, NZ+1))
+
+    sub_NX, sub_NY, sub_NZ = NX * subdivision_level, NY * subdivision_level, NZ * subdivision_level
+    pad = 1 
+    fine_dim_x, fine_dim_y, fine_dim_z = sub_NX+1+2*pad, sub_NY+1+2*pad, sub_NZ+1+2*pad
+    sub_dx, sub_dy, sub_dz = dx/Float32(subdivision_level), dy/Float32(subdivision_level), dz/Float32(subdivision_level)
+
+    fine_grid = zeros(Float32, fine_dim_x, fine_dim_y, fine_dim_z)
+    x_coords = collect(Float32, range(-pad*sub_dx, step=sub_dx, length=fine_dim_x))
+    y_coords = collect(Float32, range(-pad*sub_dy, step=sub_dy, length=fine_dim_y))
+    z_coords = collect(Float32, range(-pad*sub_dz, step=sub_dz, length=fine_dim_z))
+
+    Threads.@threads for k_f in (1+pad):(fine_dim_z-pad)
+        for j_f in (1+pad):(fine_dim_y-pad)
+            for i_f in (1+pad):(fine_dim_x-pad)
+                ix, iy, iz = i_f-(1+pad), j_f-(1+pad), k_f-(1+pad)
+                idx_x, idx_y, idx_z = div(ix, subdivision_level), div(iy, subdivision_level), div(iz, subdivision_level)
+                
+                if idx_x >= NX; idx_x = NX - 1; end
+                if idx_y >= NY; idx_y = NY - 1; end
+                if idx_z >= NZ; idx_z = NZ - 1; end
+                
+                c_i, c_j, c_k = idx_x + 1, idx_y + 1, idx_z + 1
+                
+                rem_x, rem_y, rem_z = ix - idx_x*subdivision_level, iy - idx_y*subdivision_level, iz - idx_z*subdivision_level
+                xd, yd, zd = Float32(rem_x)/subdivision_level, Float32(rem_y)/subdivision_level, Float32(rem_z)/subdivision_level
+                
+                vals = (grid_coarse[c_i,c_j,c_k], grid_coarse[c_i+1,c_j,c_k], grid_coarse[c_i+1,c_j+1,c_k], grid_coarse[c_i,c_j+1,c_k],
+                        grid_coarse[c_i,c_j,c_k+1], grid_coarse[c_i+1,c_j,c_k+1], grid_coarse[c_i+1,c_j+1,c_k+1], grid_coarse[c_i,c_j+1,c_k+1])
+                fine_grid[i_f, j_f, k_f] = trilinear_interpolate(vals, xd, yd, zd)
+            end
+        end
+    end
+
+    mc_struct = MC(fine_grid, Int; normal_sign=1, x=x_coords, y=y_coords, z=z_coords)
+    march(mc_struct, threshold)
+    
+    if length(mc_struct.triangles) == 0
+        @warn "No isosurface found at threshold $threshold."
+        return
+    end
+
+    try
+        open(filename, "w") do io
+            header_str = "Binary STL generated by HEXA TopOpt. Threshold: $threshold"
+            header = zeros(UInt8, 80)
+            len = min(length(header_str), 80)
+            copyto!(header, 1, codeunits(header_str), 1, len)
+            write(io, header)
+            
+            num_tris = UInt32(length(mc_struct.triangles))
+            write(io, num_tris)
+            
+            for face in mc_struct.triangles
+                v1 = mc_struct.vertices[face[1]]
+                v2 = mc_struct.vertices[face[2]]
+                v3 = mc_struct.vertices[face[3]]
+                
+                e1x = v2[1] - v1[1]; e1y = v2[2] - v1[2]; e1z = v2[3] - v1[3]
+                e2x = v3[1] - v1[1]; e2y = v3[2] - v1[2]; e2z = v3[3] - v1[3]
+                
+                nx = e1y*e2z - e1z*e2y
+                ny = e1z*e2x - e1x*e2z
+                nz = e1x*e2y - e1y*e2x
+                
+                mag = sqrt(nx*nx + ny*ny + nz*nz)
+                if mag > 1e-12
+                    nx /= mag; ny /= mag; nz /= mag
+                else
+                    nx = 0.0f0; ny = 0.0f0; nz = 0.0f0
+                end
+                
+                write(io, Float32(nx)); write(io, Float32(ny)); write(io, Float32(nz))
+                write(io, Float32(v1[1])); write(io, Float32(v1[2])); write(io, Float32(v1[3]))
+                write(io, Float32(v2[1])); write(io, Float32(v2[2])); write(io, Float32(v2[3]))
+                write(io, Float32(v3[1])); write(io, Float32(v3[2])); write(io, Float32(v3[3]))
+                write(io, UInt16(0))
+            end
+        end
+    catch e
+        @error "STL Save Failed: $e"
+    end
+end
+
+"""
+    export_binary_for_web(...)
+    
+    Writes compact binary for web visualizer AND checkpointing.
+    Includes:
+    1. Header (Magic, Version, Iter, R, Threshold, Count, Dims)
+    2. Data Arrays (Centroids, Density, Stress)
+    3. JSON Configuration (Full Dump + Aliases for Viewer)
+"""
+function export_binary_for_web(filename::String, 
+                               nodes::Matrix{Float32}, 
+                               elements::Matrix{Int}, 
+                               density::Vector{Float32}, 
+                               l1_stress::Vector{Float32},
+                               principal_field::Matrix{Float32},
+                               geom,
+                               threshold::Float32,
+                               iter::Int,
+                               current_radius::Float32,
+                               config::Dict)
+    
+    
+    valid_indices = findall(x -> x >= threshold, density)
+    count = length(valid_indices)
+    
+    if count == 0; return; end
+
+    centroids_flat = zeros(Float32, count * 3)
+    densities_out = density[valid_indices]
+    signed_l1_out = zeros(Float32, count)
+
+    Threads.@threads for i in 1:count
+        idx = valid_indices[i]
+        c = MeshUtilities.element_centroid(idx, nodes, elements)
+        centroids_flat[3*(i-1)+1] = c[1]
+        centroids_flat[3*(i-1)+2] = c[2]
+        centroids_flat[3*(i-1)+3] = c[3]
+
+        s1 = principal_field[1, idx]
+        s2 = principal_field[2, idx]
+        s3 = principal_field[3, idx]
+
+        abs_max = abs(s1); sign_val = sign(s1)
+        if abs(s2) > abs_max; abs_max = abs(s2); sign_val = sign(s2); end
+        if abs(s3) > abs_max; abs_max = abs(s3); sign_val = sign(s3); end
+        
+        signed_l1_out[i] = l1_stress[idx] * sign_val
+    end
+
+    
+    # We deepcopy the config to ensure we don't modify the runtime state 
+    # and to capture ALL parameters (solver, growth, etc.), INCLUDING THE NEW 'SIZE' VECTOR
+    meta = deepcopy(config)
+    
+    
+    meta["iteration"] = iter
+    meta["radius"] = current_radius
+    meta["threshold"] = threshold
+    
+    
+    # The visualizer expects an 'action' property ('add' or 'remove') to colorize shapes.
+    # The new YAML config uses 'stiffness_ratio'. We iterate the geometry and 
+    # inject 'action' based on the ratio so the visualizer works without modification.
+    if haskey(meta, "geometry") && isa(meta["geometry"], Dict)
+        for (key, shape) in meta["geometry"]
+            if isa(shape, Dict) && haskey(shape, "type")
+                # If 'action' is missing but 'stiffness_ratio' exists, synthesize it.
+                if !haskey(shape, "action") && haskey(shape, "stiffness_ratio")
+                    ratio = Float32(shape["stiffness_ratio"])
+                    if ratio > 0
+                        shape["action"] = "add"
+                    else
+                        shape["action"] = "remove"
+                    end
+                end
+            end
+        end
+    end
+
+    
+    
+    meta["loads"] = get(config, "external_forces", [])
+    meta["bcs"] = get(config, "boundary_conditions", [])
+    meta["settings"] = get(config, "optimization_parameters", Dict())
+    
+    json_str = JSON.json(meta)
+    json_bytes = Vector{UInt8}(json_str)
+    json_len = UInt32(length(json_bytes))
+
+    open(filename, "w") do io
+        
+        write(io, 0x48455841) # Magic "HEXA" (UInt32)
+        write(io, UInt32(2))  
+        write(io, Int32(iter))
+        write(io, Float32(current_radius))
+        write(io, Float32(threshold))
+        
+        
+        write(io, UInt32(count))
+        write(io, Float32(geom.dx))
+        write(io, Float32(geom.dy))
+        write(io, Float32(geom.dz))
+
+        
+        write(io, Float32.(centroids_flat)) 
+        write(io, Float32.(densities_out))
+        write(io, Float32.(signed_l1_out))
+
+        
+        write(io, json_len)
+        write(io, json_bytes)
+    end
+end
+
+function export_iteration_results(iter::Int, base_name::String, RESULTS_DIR::String, 
+                                  nodes::Matrix{Float32}, elements::Matrix{Int}, 
+                                  U_full::Vector{Float32}, F::Vector{Float32}, 
+                                  bc_indicator::Matrix{Float32}, principal_field::Matrix{Float32}, 
+                                  vonmises_field::Vector{Float32}, full_stress_voigt::Matrix{Float32}, 
+                                  l1_stress_norm_field::Vector{Float32}, principal_dir_field::Matrix{Float32},
+                                  density::Vector{Float32}, E::Float32, geom;
+                                  iso_threshold::Float32=0.8f0,
+                                  current_radius::Float32=0.0f0,
+                                  config::Dict=Dict(),
+                                  save_bin::Bool=true,
+                                  save_stl::Bool=true,
+                                  save_vtk::Bool=true)
+      
+    iter_prefix = "iter_$(iter)_"
+
+    
+    if save_bin
+        print("      > Writing Checkpoint/Web Binary...")
+        t_web = time()
+        bin_filename = joinpath(RESULTS_DIR, "$(iter_prefix)$(base_name)_webdata.bin")
+        
+        # Pass 'config' down so we can extract shapes/loads/BCs
+        export_binary_for_web(bin_filename, nodes, elements, density, l1_stress_norm_field, principal_field, geom, iso_threshold, iter, current_radius, config)
+        @printf(" done (%.3fs)\n", time() - t_web)
+    end
+
+    
+    if save_vtk
+        print("      > Writing VTK (Paraview)...")
+        t_vtk = time()
+        solution_filename = joinpath(RESULTS_DIR, "$(iter_prefix)$(base_name)_solution") 
+        ExportVTK.export_solution(nodes, elements, U_full, F, bc_indicator, 
+                                  principal_field, vonmises_field, full_stress_voigt, 
+                                  l1_stress_norm_field, principal_dir_field; 
+                                  
+                                  density=density, threshold=iso_threshold, scale=Float32(1.0), filename=solution_filename) 
+        @printf(" done (%.3fs)\n", time() - t_vtk)
+    end
+
+    
+    if save_stl
+        print("      > Writing Isosurface STL...")
+        t_stl = time()
+        stl_filename = joinpath(RESULTS_DIR, "$(iter_prefix)$(base_name)_isosurface.stl")
+        
+        export_smooth_watertight_stl(density, geom, iso_threshold, stl_filename; subdivision_level=1)
+        @printf(" done (%.3fs)\n", time() - t_stl)
+    end
+end 
+
+end
+"// # FILE: .\src\Mesh\Mesh.jl";
+module Mesh 
+ 
+export node_index, generate_mesh 
+
+ 
+using LinearAlgebra, Printf 
+ 
+""" 
+    node_index(i, j, k, nNodes_x, nNodes_y) 
+ 
+Converts 3D indices (i, j, k) into a linear node index (column‑major ordering). 
+""" 
+function node_index(i, j, k, nNodes_x, nNodes_y) 
+    return i + (j-1)*nNodes_x + (k-1)*nNodes_x*nNodes_y 
+end 
+ 
+""" 
+    generate_mesh(nElem_x, nElem_y, nElem_z; 
+                  dx=1.0f0, dy=1.0f0, dz=1.0f0) 
+ 
+Generates a structured (prismatic) hexahedral mesh. 
+""" 
+function generate_mesh(nElem_x::Int, nElem_y::Int, nElem_z::Int; 
+                       dx::Float32=Float32(1.0),  
+                       dy::Float32=Float32(1.0),  
+                       dz::Float32=Float32(1.0))  
+      
+    nNodes_x = nElem_x + 1 
+    nNodes_y = nElem_y + 1 
+    nNodes_z = nElem_z + 1 
+    dims = (nNodes_x, nNodes_y, nNodes_z) 
+        
+    nNodes = nNodes_x * nNodes_y * nNodes_z 
+    nodes = zeros(Float32, nNodes, 3) 
+    idx = 1 
+    for k in 1:nNodes_z, j in 1:nNodes_y, i in 1:nNodes_x 
+        nodes[idx, :] = [(i-1)*dx, (j-1)*dy, (k-1)*dz] 
+        idx += 1 
+    end 
+      
+    nElem = (nNodes_x - 1) * (nNodes_y - 1) * (nNodes_z - 1) 
+    elements = Matrix{Int}(undef, nElem, 8) 
+    elem_idx = 1 
+    for k in 1:(nNodes_z-1), j in 1:(nNodes_y-1), i in 1:(nNodes_x-1) 
+        n1 = node_index(i, j, k, nNodes_x, nNodes_y) 
+        n2 = node_index(i+1, j, k, nNodes_x, nNodes_y) 
+        n3 = node_index(i+1, j+1, k, nNodes_x, nNodes_y) 
+        n4 = node_index(i, j+1, k, nNodes_x, nNodes_y) 
+        n5 = node_index(i, j, k+1, nNodes_x, nNodes_y) 
+        n6 = node_index(i+1, j, k+1, nNodes_x, nNodes_y) 
+        n7 = node_index(i+1, j+1, k+1, nNodes_x, nNodes_y) 
+        n8 = node_index(i, j+1, k+1, nNodes_x, nNodes_y) 
+        elements[elem_idx, :] = [n1, n2, n3, n4, n5, n6, n7, n8] 
+        elem_idx += 1 
+    end 
+ 
+    println("Generated structured mesh: $(nElem) elements, $(nNodes) nodes.") 
+ 
+    return nodes, elements, dims 
+end 
+ 
+end
+"// # FILE: .\src\Mesh\MeshPruner.jl";
+// # FILE: .\MeshPruner.jl";
+module MeshPruner
+
+using LinearAlgebra
+using SparseArrays
+
+export prune_system, reconstruct_full_solution
+
+"""
+    prune_system(nodes, elements, density, threshold, bc_indicator, F)
+
+Removes elements with density < threshold. 
+Removes nodes that are no longer attached to any active element.
+Remaps Boundary Conditions and Forces to the new reduced indices.
+
+Returns a NamedTuple containing the reduced system and the mapping arrays.
+"""
+function prune_system(nodes::Matrix{Float32}, 
+                      elements::Matrix{Int}, 
+                      density::Vector{Float32}, 
+                      threshold::Float32, 
+                      bc_indicator::Matrix{Float32}, 
+                      F::Vector{Float32})
+
+    nElem = size(elements, 1)
+    nNodes = size(nodes, 1)
+
+    
+    
+    
+    active_mask = density .> threshold
+    active_element_indices = findall(active_mask)
+    nActiveElem = length(active_element_indices)
+
+    if nActiveElem == 0
+        error("MeshPruner: No active elements found (Threshold: $threshold). System is empty.")
+    end
+
+    
+    active_nodes_mask = falses(nNodes)
+    
+    
+    for e in active_element_indices
+        for i in 1:8
+            node_idx = elements[e, i]
+            active_nodes_mask[node_idx] = true
+        end
+    end
+
+    
+    
+    
+    old_to_new_node_map = zeros(Int, nNodes)
+    new_to_old_node_map = Int[]
+    
+    current_new_id = 1
+    for i in 1:nNodes
+        if active_nodes_mask[i]
+            old_to_new_node_map[i] = current_new_id
+            push!(new_to_old_node_map, i)
+            current_new_id += 1
+        end
+    end
+    
+    nActiveNodes = length(new_to_old_node_map)
+
+    
+    reduced_nodes = nodes[new_to_old_node_map, :]
+
+    
+    reduced_elements = Matrix{Int}(undef, nActiveElem, 8)
+    for (i, old_e_idx) in enumerate(active_element_indices)
+        for j in 1:8
+            old_node = elements[old_e_idx, j]
+            new_node = old_to_new_node_map[old_node]
+            reduced_elements[i, j] = new_node
+        end
+    end
+
+    
+    reduced_bc = bc_indicator[new_to_old_node_map, :]
+
+    
+    reduced_ndof = nActiveNodes * 3
+    reduced_F = zeros(Float32, reduced_ndof)
+    
+    
+    
+    for (new_idx, old_idx) in enumerate(new_to_old_node_map)
+        base_old = 3 * (old_idx - 1)
+        base_new = 3 * (new_idx - 1)
+        reduced_F[base_new+1] = F[base_old+1]
+        reduced_F[base_new+2] = F[base_old+2]
+        reduced_F[base_new+3] = F[base_old+3]
+    end
+
+    
+    reduced_density = density[active_element_indices]
+
+    return (
+        nodes = reduced_nodes,
+        elements = reduced_elements,
+        bc_indicator = reduced_bc,
+        F = reduced_F,
+        density = reduced_density,
+        old_to_new_node_map = old_to_new_node_map,
+        new_to_old_node_map = new_to_old_node_map,
+        active_element_indices = active_element_indices,
+        n_original_nodes = nNodes,
+        n_original_elems = nElem
+    )
+end
+
+"""
+    reconstruct_full_solution(u_reduced, new_to_old_node_map, n_full_nodes)
+
+Maps the displacement vector from the reduced system back to the full system size.
+Nodes that were removed (voids) will have 0.0 displacement.
+"""
+function reconstruct_full_solution(u_reduced::Vector{Float32}, 
+                                   new_to_old_node_map::Vector{Int}, 
+                                   n_full_nodes::Int)
+    
+    ndof_full = n_full_nodes * 3
+    u_full = zeros(Float32, ndof_full)
+
+    
+    for (new_node_idx, old_node_idx) in enumerate(new_to_old_node_map)
+        base_new = 3 * (new_node_idx - 1)
+        base_old = 3 * (old_node_idx - 1)
+
+        u_full[base_old+1] = u_reduced[base_new+1]
+        u_full[base_old+2] = u_reduced[base_new+2]
+        u_full[base_old+3] = u_reduced[base_new+3]
+    end
+
+    return u_full
+end
+
+end
+"// # FILE: .\src\Mesh\MeshRefiner.jl";
+
+
+module MeshRefiner
+
+using LinearAlgebra
+using Printf
+
+using ..Mesh
+using ..Helpers
+
+export refine_mesh_and_fields
+
+function estimate_element_memory_cost_bytes(hard_element_limit::Int)
+    
+    
+    # We lower the 'safe' byte estimate per element because purely Matrix-Free on H100 is very efficient.
+    
+    if hard_element_limit > 500_000_000
+        return 180 
+    else
+        return 250 
+    end
+end
+
+function get_safe_element_limit(hard_element_limit::Int)
+    
+    free_ram = Float64(Sys.free_memory())
+    
+    
+    
+    is_h_series = hard_element_limit > 500_000_000
+    
+    safety_buffer = if is_h_series
+        max(free_ram * 0.05, 2.0 * 1024^3) 
+    else
+        max(free_ram * 0.20, 4.0 * 1024^3) 
+    end
+        
+    usable_ram = free_ram - safety_buffer
+
+    if usable_ram <= 0
+        @warn "[MeshRefiner] System RAM is critically low. Limiting mesh severely."
+        return 1_000_000 
+    end
+
+    bytes_per_elem = estimate_element_memory_cost_bytes(hard_element_limit)
+    max_elements = floor(Int, usable_ram / bytes_per_elem)
+    
+    return max_elements
+end
+
+function refine_mesh_and_fields(nodes::Matrix{Float32}, 
+                                elements::Matrix{Int}, 
+                                density::Vector{Float32}, 
+                                alpha_field::Vector{Float32}, 
+                                current_dims::Tuple{Int, Int, Int},
+                                target_active_count::Int,
+                                domain_bounds::NamedTuple;
+                                max_growth_rate::Float64=1.2,
+                                hard_element_limit::Int=800_000_000) 
+
+    println("\n" * "="^60)
+    println("[MeshRefiner] Evaluating Mesh Refinement...")
+
+    n_total_old = length(density)
+    
+    n_active_old = count(d -> d > 0.05f0, density) 
+    active_ratio = max(0.01, n_active_old / n_total_old) 
+    
+    println("  Current Total:   $(n_total_old)")
+    println("  Current Active:  $(n_active_old) ($(round(active_ratio*100, digits=2))%)")
+    println("  Target Active:   $(target_active_count)")
+
+    ideal_total_elements = round(Int, target_active_count / active_ratio)
+    
+    rate_limit_elements = round(Int, n_total_old * max_growth_rate)
+    ram_limit_elements = get_safe_element_limit(hard_element_limit)
+    final_new_total = min(ideal_total_elements, rate_limit_elements, ram_limit_elements, hard_element_limit)
+
+    println("  > Ideal Requirement: $ideal_total_elements")
+    println("  > Rate Limit ($(max_growth_rate)x): $rate_limit_elements")
+    println("  > RAM Limit:         $ram_limit_elements")
+    println("  > Config Limit:      $hard_element_limit")
+    
+    if final_new_total < ideal_total_elements
+        println("  [⚠️ LIMIT APPLIED] Mesh growth constrained by safeguards.")
+    end
+    
+    println("  ---> FINAL NEW MESH: $final_new_total")
+
+    if final_new_total < (n_total_old * 1.05)
+        println("  [ℹ️ INFO] Growth too small (< 5%). Skipping refinement.")
+        println("="^60 * "\n")
+        return nodes, elements, density, alpha_field, current_dims
+    end
+
+    len_x, len_y, len_z = domain_bounds.len_x, domain_bounds.len_y, domain_bounds.len_z
+    
+    new_nx, new_ny, new_nz, new_dx, new_dy, new_dz, actual_count = 
+        Helpers.calculate_element_distribution(len_x, len_y, len_z, final_new_total)
+        
+    println("  > Generating grid: $(new_nx)x$(new_ny)x$(new_nz) = $actual_count")
+    println("  > Resolution: $(new_dx) x $(new_dy) x $(new_dz)")
+
+    if actual_count > get_safe_element_limit(hard_element_limit)
+        error("[MeshRefiner] Aborting: Race condition on memory. RAM dropped during calculation.")
+    end
+
+    new_nodes, new_elements, new_dims = Mesh.generate_mesh(
+        new_nx, new_ny, new_nz;
+        dx=new_dx, dy=new_dy, dz=new_dz
+    )
+    
+    min_pt = domain_bounds.min_pt
+    new_nodes[:, 1] .+= min_pt[1]
+    new_nodes[:, 2] .+= min_pt[2]
+    new_nodes[:, 3] .+= min_pt[3]
+    
+    println("  > Mapping density and thermal fields...")
+    n_new_total = size(new_elements, 1)
+    new_density = zeros(Float32, n_new_total)
+    new_alpha   = zeros(Float32, n_new_total) 
+    
+    old_nx = current_dims[1] - 1
+    old_ny = current_dims[2] - 1
+    old_nz = current_dims[3] - 1
+    
+    old_dx = len_x / old_nx
+    old_dy = len_y / old_ny
+    old_dz = len_z / old_nz
+
+    Threads.@threads for e_new in 1:n_new_total
+        iz = div(e_new - 1, new_nx * new_ny) + 1
+        rem_z = (e_new - 1) % (new_nx * new_ny)
+        iy = div(rem_z, new_nx) + 1
+        ix = rem_z % new_nx + 1
+        
+        cx = (ix - 0.5f0) * new_dx
+        cy = (iy - 0.5f0) * new_dy
+        cz = (iz - 0.5f0) * new_dz
+        
+        old_ix = clamp(floor(Int, cx / old_dx) + 1, 1, old_nx)
+        old_iy = clamp(floor(Int, cy / old_dy) + 1, 1, old_ny)
+        old_iz = clamp(floor(Int, cz / old_dz) + 1, 1, old_nz)
+        
+        old_linear = old_ix + (old_iy - 1)*old_nx + (old_iz - 1)*old_nx*old_ny
+        
+        new_density[e_new] = density[old_linear]
+        new_alpha[e_new]   = alpha_field[old_linear] 
+    end
+    
+    println("[MeshRefiner] Success.")
+    println("="^60 * "\n")
+
+    return new_nodes, new_elements, new_density, new_alpha, new_dims
+end
+
+end
+"// # FILE: .\src\Mesh\MeshShapeProcessing.jl";
+
+module MeshShapeProcessing 
+ 
+export apply_geometric_modifiers!
+ 
+using LinearAlgebra 
+using Base.Threads
+using ..MeshUtilities     
+ 
+""" 
+    apply_geometric_modifiers!(density, alpha_field, nodes, elements, shapes, min_density)
+
+Iterates over elements and modifies the `density` and `alpha_field` based on the 
+`stiffness_ratio` of the geometric shapes defined in the configuration.
+""" 
+function apply_geometric_modifiers!(density::Vector{Float32}, 
+                                    alpha_field::Vector{Float32},
+                                    nodes::Matrix{Float32}, 
+                                    elements::Matrix{Int}, 
+                                    shapes::Vector{Any},
+                                    min_density::Float32)
+    
+    if isempty(shapes)
+        return
+    end
+
+    nElem = size(elements, 1)
+    
+    Threads.@threads for e in 1:nElem
+        
+        centroid = MeshUtilities.element_centroid(e, nodes, elements)
+        
+        for shape in shapes
+            shape_type = lowercase(get(shape, "type", ""))
+            is_inside = false
+
+            if shape_type == "sphere"
+                if haskey(shape, "center") && haskey(shape, "diameter")
+                    center = tuple(Float32.(shape["center"])...)
+                    diam   = Float32(shape["diameter"])
+                    is_inside = MeshUtilities.inside_sphere(centroid, center, diam)
+                end
+            elseif shape_type == "box"
+                if haskey(shape, "center")
+                    center = tuple(Float32.(shape["center"])...)
+                    
+                    # Logic to handle 'size' vector, replacing 'side'
+                    if haskey(shape, "size")
+                        sz_raw = shape["size"]
+                        
+                        if isa(sz_raw, AbstractVector) && length(sz_raw) >= 3
+                            box_sz = (Float32(sz_raw[1]), Float32(sz_raw[2]), Float32(sz_raw[3]))
+                            is_inside = MeshUtilities.inside_box(centroid, center, box_sz)
+                        end
+                    elseif haskey(shape, "side")
+                        
+                        s = Float32(shape["side"])
+                        box_sz = (s, s, s)
+                        is_inside = MeshUtilities.inside_box(centroid, center, box_sz)
+                    end
+                end
+            end
+
+            if is_inside
+                
+                ratio = Float32(get(shape, "stiffness_ratio", 0.0))
+                
+                if ratio == 0.0f0
+                    
+                    density[e] = min_density
+                    alpha_field[e] = 0.0f0
+                elseif ratio < 0.0f0
+                    
+                    density[e] = abs(ratio)
+                    alpha_field[e] = 1.0f0
+                else
+                    
+                    density[e] = ratio
+                    alpha_field[e] = 0.0f0
+                end
+            end
+        end
+    end
+end 
+ 
+end
+"// # FILE: .\src\Mesh\MeshUtilities.jl";
+
+module MeshUtilities 
+ 
+export inside_sphere, inside_box, element_centroid,
+       check_element_quality, fix_inverted_elements!, 
+       calculate_element_quality 
+ 
+using LinearAlgebra 
+ 
+""" 
+    element_centroid(e, nodes, elements) 
+ 
+Computes the centroid of element `e` given the node coordinates. 
+""" 
+function element_centroid(e::Int, nodes::Matrix{Float32}, elements::Matrix{Int}) 
+    conn = view(elements, e, :) 
+     
+    @inbounds begin
+        c1 = nodes[conn[1], :]
+        c2 = nodes[conn[2], :]
+        c3 = nodes[conn[3], :]
+        c4 = nodes[conn[4], :]
+        c5 = nodes[conn[5], :]
+        c6 = nodes[conn[6], :]
+        c7 = nodes[conn[7], :]
+        c8 = nodes[conn[8], :]
+    end
+    return (c1 .+ c2 .+ c3 .+ c4 .+ c5 .+ c6 .+ c7 .+ c8) ./ 8.0f0  
+end 
+
+""" 
+    inside_sphere(pt, center, diam) 
+Return true if point `pt` is inside a sphere of diameter `diam` at `center`. 
+""" 
+function inside_sphere(pt::AbstractVector, center::Tuple{Float32,Float32,Float32}, diam::Float32) 
+    r = diam / 2f0 
+    return norm(pt .- collect(center)) <= r 
+end 
+
+""" 
+    inside_box(pt, center, size) 
+Return true if point `pt` is inside a box with dimensions `size` (x, y, z) centered at `center`. 
+""" 
+function inside_box(pt::AbstractVector, center::Tuple{Float32,Float32,Float32}, box_size::Tuple{Float32,Float32,Float32}) 
+    half_x = box_size[1] / 2f0 
+    half_y = box_size[2] / 2f0
+    half_z = box_size[3] / 2f0
+    
+    return abs(pt[1] - center[1]) <= half_x && 
+           abs(pt[2] - center[2]) <= half_y && 
+           abs(pt[3] - center[3]) <= half_z 
+end 
+ 
+""" 
+    check_element_quality(nodes, elements) -> poor_elements 
+Mark which elements are degenerate, etc. (Placeholder for future expansion)
+""" 
+function check_element_quality(nodes::Matrix{Float32}, elements::Matrix{Int}) 
+    nElem = size(elements,1) 
+    poor_elements = Int[] 
+     
+    return poor_elements 
+end 
+ 
+""" 
+    fix_inverted_elements!(nodes, elements) -> (fixed_count, warning_count) 
+Swap node ordering to fix negative Jacobians. (Placeholder)
+""" 
+function fix_inverted_elements!(nodes::Matrix{Float32}, elements::Matrix{Int}) 
+    return (0, 0) 
+end 
+ 
+""" 
+    calculate_element_quality(nodes, elements) 
+Returns (aspect_ratios, min_jacobians) (Placeholder)
+""" 
+function calculate_element_quality(nodes::Matrix{Float32}, elements::Matrix{Int}) 
+    nElem = size(elements, 1) 
+    return zeros(Float32, nElem), zeros(Float32, nElem) 
+end 
+ 
+end
+"// # FILE: .\src\Optimization\GPUHelmholtz.jl";
+// 
+module GPUHelmholtz
+
+using CUDA
+using LinearAlgebra
+using Printf
+using ..Element
+using ..Mesh
+
+export HelmholtzWorkspace, setup_helmholtz_workspace, apply_gpu_filter!
+
+mutable struct HelmholtzWorkspace{T}
+    is_initialized::Bool
+    radius::T
+    
+    elements::CuVector{Int32} 
+    Ae_base::CuMatrix{T}         
+    inv_diag::CuVector{T}        
+    
+    r::CuVector{T}
+    p::CuVector{T}
+    z::CuVector{T}
+    Ap::CuVector{T}
+    x::CuVector{T} 
+    b::CuVector{T} 
+    
+    nNodes::Int
+    nElem::Int
+    
+    HelmholtzWorkspace{T}() where T = new{T}(false, T(0))
+end
+
+const GLOBAL_HELMHOLTZ_CACHE = HelmholtzWorkspace{Float32}()
+
+
+
+
+
+function compute_rhs_kernel!(b, density, elements, val_scale, nElem)
+    e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if e <= nElem
+        val = density[e] * val_scale
+        base_idx = (e - 1) * 8
+        @inbounds for i in 1:8
+            node = elements[base_idx + i]
+            CUDA.atomic_add!(pointer(b, node), val)
+        end
+    end
+    return nothing
+end
+
+function matvec_kernel!(y, x, elements, Ae, nElem)
+    e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if e <= nElem
+        base_idx = (e - 1) * 8
+        
+        # Load x values for this element's nodes
+        x_loc_1 = x[elements[base_idx + 1]]
+        x_loc_2 = x[elements[base_idx + 2]]
+        x_loc_3 = x[elements[base_idx + 3]]
+        x_loc_4 = x[elements[base_idx + 4]]
+        x_loc_5 = x[elements[base_idx + 5]]
+        x_loc_6 = x[elements[base_idx + 6]]
+        x_loc_7 = x[elements[base_idx + 7]]
+        x_loc_8 = x[elements[base_idx + 8]]
+        
+        @inbounds for r in 1:8
+            val = Ae[r,1]*x_loc_1 + Ae[r,2]*x_loc_2 + Ae[r,3]*x_loc_3 + Ae[r,4]*x_loc_4 +
+                  Ae[r,5]*x_loc_5 + Ae[r,6]*x_loc_6 + Ae[r,7]*x_loc_7 + Ae[r,8]*x_loc_8
+            
+            node = elements[base_idx + r]
+            CUDA.atomic_add!(pointer(y, node), val)
+        end
+    end
+    return nothing
+end
+
+function extract_solution_kernel!(filtered_density, x, elements, nElem)
+    e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if e <= nElem
+        base_idx = (e - 1) * 8
+        sum_val = 0.0f0
+        @inbounds for i in 1:8
+            sum_val += x[elements[base_idx + i]]
+        end
+        filtered_density[e] = sum_val / 8.0f0
+    end
+    return nothing
+end
+
+function compute_diagonal_kernel!(diag, elements, Ae_diag, nElem)
+    e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if e <= nElem
+        base_idx = (e - 1) * 8
+        @inbounds for i in 1:8
+            node = elements[base_idx + i]
+            val = Ae_diag[i]
+            CUDA.atomic_add!(pointer(diag, node), val)
+        end
+    end
+    return nothing
+end
+
+
+
+
+
+function setup_helmholtz_workspace(elements_cpu::Matrix{Int}, 
+                                   dx::T, dy::T, dz::T, radius::T) where T
+    
+    ws = GLOBAL_HELMHOLTZ_CACHE
+    nElem = size(elements_cpu, 1)
+    nNodes = maximum(elements_cpu)
+    
+    
+    if !ws.is_initialized || ws.nElem != nElem || abs(ws.radius - radius) > 1e-5
+        
+        
+        # This prevents "0 bytes available" errors when the pool is fragmented
+        if CUDA.available_memory() < (nElem * 200) 
+            GC.gc()
+            CUDA.reclaim()
+        end
+
+        
+        
+        
+        Ke, Me = Element.get_scalar_canonical_matrices(dx, dy, dz)
+        Ae_cpu = (radius^2) .* Ke .+ Me
+        
+        elements_flat = vec(elements_cpu') 
+        
+        
+        ws.elements = CuArray(Int32.(elements_flat))
+        ws.Ae_base = CuArray(Ae_cpu)
+        
+        diag_vec = CUDA.zeros(T, nNodes)
+        Ae_diag_gpu = CuArray(diag(Ae_cpu))
+        
+        threads = 256
+        blocks = cld(nElem, threads)
+        @cuda threads=threads blocks=blocks compute_diagonal_kernel!(diag_vec, ws.elements, Ae_diag_gpu, nElem)
+        
+        ws.inv_diag = 1.0f0 ./ diag_vec
+        
+        ws.r  = CUDA.zeros(T, nNodes)
+        ws.p  = CUDA.zeros(T, nNodes)
+        ws.z  = CUDA.zeros(T, nNodes)
+        ws.Ap = CUDA.zeros(T, nNodes)
+        ws.x  = CUDA.zeros(T, nNodes)
+        ws.b  = CUDA.zeros(T, nNodes)
+        
+        ws.nNodes = nNodes
+        ws.nElem = nElem
+        ws.radius = radius
+        ws.is_initialized = true
+    end
+    return ws
+end
+
+
+
+
+
+function solve_helmholtz_on_gpu(density_cpu::Vector{T}, ws::HelmholtzWorkspace{T}, 
+                                dx, dy, dz, tol::T) where T
+    
+    density_gpu = CuArray(density_cpu) 
+    filtered_gpu = CUDA.zeros(T, ws.nElem)
+    
+    threads = 256
+    blocks = cld(ws.nElem, threads)
+    
+    fill!(ws.b, 0.0f0)
+    elem_vol = dx * dy * dz
+    val_scale = elem_vol / 8.0f0
+    @cuda threads=threads blocks=blocks compute_rhs_kernel!(ws.b, density_gpu, ws.elements, val_scale, ws.nElem)
+    
+    norm_b = norm(ws.b)
+    if norm_b == 0.0f0
+        return density_cpu, 0.0, 0, 0.0
+    end
+
+    fill!(ws.x, 0.0f0) 
+    ws.r .= ws.b
+    ws.z .= ws.r .* ws.inv_diag 
+    ws.p .= ws.z
+    
+    rho_old = dot(ws.r, ws.z)
+    
+    max_iter = 200 
+    final_rel_res = 0.0f0
+    final_iter = 0
+
+    filter_start_time = time()
+
+    for iter in 1:max_iter
+        final_iter = iter
+        
+        fill!(ws.Ap, 0.0f0)
+        @cuda threads=threads blocks=blocks matvec_kernel!(ws.Ap, ws.p, ws.elements, ws.Ae_base, ws.nElem)
+        
+        alpha = rho_old / dot(ws.p, ws.Ap)
+        
+        ws.x .+= alpha .* ws.p
+        ws.r .-= alpha .* ws.Ap
+        
+        if iter % 10 == 0
+            norm_r = norm(ws.r)
+            final_rel_res = norm_r / norm_b
+            if final_rel_res < tol
+                break
+            end
+        end
+        
+        ws.z .= ws.r .* ws.inv_diag 
+        
+        rho_new = dot(ws.r, ws.z)
+        beta = rho_new / rho_old
+        ws.p .= ws.z .+ beta .* ws.p
+        
+        rho_old = rho_new
+    end
+    
+    filter_time = time() - filter_start_time
+    @cuda threads=threads blocks=blocks extract_solution_kernel!(filtered_gpu, ws.x, ws.elements, ws.nElem)
+    
+    return Array(filtered_gpu), filter_time, final_iter, final_rel_res
+end
+
+function apply_blocked_gpu_filter!(density_full::Vector{T}, nElem_x, nElem_y, nElem_z, 
+                                   dx, dy, dz, radius, tol::T) where T
+    
+    
+    
+    GC.gc()
+    CUDA.reclaim()
+    
+    
+    bytes_per_elem_heuristic = 100 
+    
+    free_mem = CUDA.available_memory()
+    # Use 85% of what's truly free to avoid OOM during allocation spikes
+    safe_mem = Int(floor(free_mem * 0.85)) 
+    
+    # Ensure we don't calculate 0 size if memory is weirdly reported
+    safe_mem = max(safe_mem, 100 * 1024 * 1024) 
+    
+    max_elems_per_block = div(safe_mem, bytes_per_elem_heuristic)
+    
+    
+    min_dim = min(dx, dy, dz)
+    halo_cells = ceil(Int, (3.0 * radius) / min_dim)
+    halo_cells = max(halo_cells, 2)
+    
+    cube_root = cbrt(max_elems_per_block)
+    
+    n_chunks_x = ceil(Int, nElem_x / cube_root)
+    n_chunks_y = ceil(Int, nElem_y / cube_root)
+    n_chunks_z = ceil(Int, nElem_z / cube_root)
+    
+    blk_nx = ceil(Int, nElem_x / n_chunks_x)
+    blk_ny = ceil(Int, nElem_y / n_chunks_y)
+    blk_nz = ceil(Int, nElem_z / n_chunks_z)
+
+    filtered_full = zeros(T, length(density_full))
+    
+    total_time = 0.0
+    total_iters = 0
+    blocks_processed = 0
+    n_total_blocks = n_chunks_x * n_chunks_y * n_chunks_z
+    
+    if n_total_blocks > 1
+        println("  [GPU Filter] Blocked Mode: Split into $n_total_blocks blocks ($n_chunks_x x $n_chunks_y x $n_chunks_z). Halo: $halo_cells cells.")
+    end
+
+    for cz in 1:n_chunks_z, cy in 1:n_chunks_y, cx in 1:n_chunks_x
+        
+        
+        x_start = (cx - 1) * blk_nx + 1; x_end = min(cx * blk_nx, nElem_x)
+        y_start = (cy - 1) * blk_ny + 1; y_end = min(cy * blk_ny, nElem_y)
+        z_start = (cz - 1) * blk_nz + 1; z_end = min(cz * blk_nz, nElem_z)
+        
+        
+        x_start_halo = max(1, x_start - halo_cells); x_end_halo = min(nElem_x, x_end + halo_cells)
+        y_start_halo = max(1, y_start - halo_cells); y_end_halo = min(nElem_y, y_end + halo_cells)
+        z_start_halo = max(1, z_start - halo_cells); z_end_halo = min(nElem_z, z_end + halo_cells)
+        
+        loc_nx = x_end_halo - x_start_halo + 1
+        loc_ny = y_end_halo - y_start_halo + 1
+        loc_nz = z_end_halo - z_start_halo + 1
+        n_loc_elem = loc_nx * loc_ny * loc_nz
+        
+        
+        rho_local = zeros(T, n_loc_elem)
+        loc_idx = 1
+        for k in z_start_halo:z_end_halo
+            for j in y_start_halo:y_end_halo
+                global_start = (k-1)*(nElem_x*nElem_y) + (j-1)*nElem_x + x_start_halo
+                rho_local[loc_idx : loc_idx+loc_nx-1] = density_full[global_start : global_start+loc_nx-1]
+                loc_idx += loc_nx
+            end
+        end
+        
+        
+        _, elems_local, _ = Mesh.generate_mesh(loc_nx, loc_ny, loc_nz; dx=T(dx), dy=T(dy), dz=T(dz))
+        ws = setup_helmholtz_workspace(elems_local, T(dx), T(dy), T(dz), T(radius))
+        
+        res_local, t_solve, iters, _ = solve_helmholtz_on_gpu(rho_local, ws, dx, dy, dz, tol)
+        
+        total_time += t_solve
+        total_iters += iters
+        blocks_processed += 1
+        
+        
+        off_x = x_start - x_start_halo
+        off_y = y_start - y_start_halo
+        off_z = z_start - z_start_halo
+        core_dim_x = x_end - x_start + 1
+        
+        for k in 1:(z_end - z_start + 1)
+            loc_k = k + off_z
+            for j in 1:(y_end - y_start + 1)
+                loc_j = j + off_y
+                loc_start_idx = (loc_k-1)*(loc_nx*loc_ny) + (loc_j-1)*loc_nx + (1 + off_x)
+                
+                global_k = z_start + k - 1
+                global_j = y_start + j - 1
+                global_start_idx = (global_k-1)*(nElem_x*nElem_y) + (global_j-1)*nElem_x + x_start
+                
+                filtered_full[global_start_idx : global_start_idx+core_dim_x-1] = 
+                    res_local[loc_start_idx : loc_start_idx+core_dim_x-1]
+            end
+        end
+        
+        
+        if blocks_processed % 10 == 0; CUDA.reclaim(); end
+    end
+    
+    return filtered_full, total_time, (blocks_processed > 0 ? round(Int, total_iters/blocks_processed) : 0), 0.0
+end
+
+
+function apply_gpu_filter!(density_cpu::Vector{T}, nElem_x, nElem_y, nElem_z, dx, dy, dz, radius, elements_cpu, tol::T=1.0f-5) where T
+    
+    
+    
+    nElem = length(density_cpu)
+    
+    
+    GC.gc()
+    CUDA.reclaim()
+    
+    free_mem = CUDA.available_memory()
+    req_mem = nElem * 100 
+    
+    try
+        if req_mem < (free_mem * 0.9)
+            ws = setup_helmholtz_workspace(elements_cpu, T(dx), T(dy), T(dz), T(radius))
+            return solve_helmholtz_on_gpu(density_cpu, ws, dx, dy, dz, tol)
+        else
+            
+            return apply_blocked_gpu_filter!(density_cpu, nElem_x, nElem_y, nElem_z, dx, dy, dz, radius, tol)
+        end
+    catch e
+        
+        println("\n" * "!"^60)
+        println("  [GPU Filter] CRITICAL ERROR: $(e).")
+        println("  [GPU Filter] Falling back to CPU Filter to save simulation...")
+        println("!"^60 * "\n")
+        
+        
+        
+        return Float32[], 0.0, 0, 0.0 
+    end
+end
+
+end
+"// # FILE: .\src\Optimization\TopOpt.jl";
+
+
+module TopologyOptimization 
+
+using LinearAlgebra
+using SparseArrays
+using Printf  
+using Statistics 
+using SuiteSparse 
+using CUDA
+using Base.Threads
+using ..Element
+using ..Mesh
+using ..GPUHelmholtz 
+using ..Helpers
+
+export update_density!, reset_filter_cache!
+
+
+
+
+
+mutable struct FilterCache
+    is_initialized::Bool
+    radius::Float32
+    K_filter::SuiteSparse.CHOLMOD.Factor{Float64} 
+    FilterCache() = new(false, 0.0f0)
+end
+
+const GLOBAL_FILTER_CACHE = FilterCache()
+
+function reset_filter_cache!()
+    GLOBAL_FILTER_CACHE.is_initialized = false
+end
+
+
+
+
+
+function assemble_helmholtz_system(nElem_x, nElem_y, nElem_z, dx, dy, dz, R)
+    nNodes = (nElem_x + 1) * (nElem_y + 1) * (nElem_z + 1)
+    nElem = nElem_x * nElem_y * nElem_z
+    Ke_local, Me_local = Element.get_scalar_canonical_matrices(dx, dy, dz)
+    
+    entries_per_elem = 64 
+    total_entries = nElem * entries_per_elem
+    
+    I_vec = Vector{Int64}(undef, total_entries)
+    J_vec = Vector{Int64}(undef, total_entries)
+    V_vec = Vector{Float64}(undef, total_entries)
+    
+    nx, ny = nElem_x + 1, nElem_y + 1
+    Re_local = (R^2) .* Ke_local .+ Me_local
+    
+    idx_counter = 0
+    for k in 1:nElem_z, j in 1:nElem_y, i in 1:nElem_x
+        n1 = i        + (j-1)*nx        + (k-1)*nx*ny
+        n2 = (i+1) + (j-1)*nx        + (k-1)*nx*ny
+        n3 = (i+1) + j*nx            + (k-1)*nx*ny
+        n4 = i        + j*nx            + (k-1)*nx*ny
+        n5 = i        + (j-1)*nx        + k*nx*ny
+        n6 = (i+1) + (j-1)*nx        + k*nx*ny
+        n7 = (i+1) + j*nx            + k*nx*ny
+        n8 = i        + j*nx            + k*nx*ny
+        nodes = [n1, n2, n3, n4, n5, n6, n7, n8]
+        
+        for r in 1:8
+            row = nodes[r]
+            for c in 1:8
+                col = nodes[c]
+                idx_counter += 1
+                I_vec[idx_counter] = Int64(row)
+                J_vec[idx_counter] = Int64(col)
+                V_vec[idx_counter] = Float64(Re_local[r, c])
+            end
+        end
+    end
+    
+    K_global = sparse(I_vec, J_vec, V_vec, nNodes, nNodes)
+    n = size(K_global, 1)
+    K_global = K_global + sparse(1:n, 1:n, fill(1e-9, n), n, n) 
+    
+    return cholesky(K_global)
+end
+
+function apply_helmholtz_filter_cpu(field_elem::Vector{Float32}, F_fact, nElem_x, nElem_y, nElem_z, dx, dy, dz)
+    nx, ny = nElem_x + 1, nElem_y + 1
+    nNodes = (nElem_x + 1) * (nElem_y + 1) * (nElem_z + 1)
+    nElem = length(field_elem)
+    
+    elem_vol = dx * dy * dz
+    nodal_weight = elem_vol / 8.0f0
+    RHS = zeros(Float64, nNodes)
+    
+    idx_e = 1
+    for k in 1:nElem_z, j in 1:nElem_y, i in 1:nElem_x
+        val = Float64(field_elem[idx_e] * nodal_weight)
+        n1 = i + (j-1)*nx + (k-1)*nx*ny
+        n2 = n1 + 1
+        n3 = n1 + nx + 1
+        n4 = n1 + nx
+        n5 = n1 + nx*ny
+        n6 = n2 + nx*ny
+        n7 = n3 + nx*ny
+        n8 = n4 + nx*ny
+        
+        RHS[n1] += val; RHS[n2] += val; RHS[n3] += val; RHS[n4] += val;
+        RHS[n5] += val; RHS[n6] += val; RHS[n7] += val; RHS[n8] += val;
+        idx_e += 1
+    end
+    
+    nodal_filtered = F_fact \ RHS
+    
+    filtered_elem = zeros(Float32, nElem)
+    
+    Threads.@threads for e in 1:nElem
+        iz = div(e - 1, nElem_x * nElem_y) + 1
+        rem_z = (e - 1) % (nElem_x * nElem_y)
+        iy = div(rem_z, nElem_x) + 1
+        ix = rem_z % nElem_x + 1
+        
+        n1 = ix + (iy-1)*nx + (iz-1)*nx*ny
+        n2 = n1 + 1; n3 = n1 + nx + 1; n4 = n1 + nx;
+        n5 = n1 + nx*ny; n6 = n2 + nx*ny; n7 = n3 + nx*ny; n8 = n4 + nx*ny;
+        
+        sum_nodes = nodal_filtered[n1] + nodal_filtered[n2] + nodal_filtered[n3] + nodal_filtered[n4] +
+                    nodal_filtered[n5] + nodal_filtered[n6] + nodal_filtered[n7] + nodal_filtered[n8]
+        
+        filtered_elem[e] = Float32(sum_nodes / 8.0)
+    end
+    
+    return filtered_elem
+end
+
+
+
+
+
+function update_density!(density::Vector{Float32}, 
+                         l1_stress_norm_field::Vector{Float32}, 
+                         protected_elements_mask::BitVector, 
+                         E::Float32, 
+                         l1_stress_allowable::Float32, 
+                         iter::Int, 
+                         number_of_iterations::Int, 
+                         original_density::Vector{Float32}, 
+                         min_density::Float32,  
+                         max_density::Float32, 
+                         config::Dict,
+                         elements::Matrix{Int}, 
+                         is_annealing::Bool=false) 
+
+    nElem = length(density)
+    
+    opt_params = config["optimization_parameters"]
+    geom_params = config["geometry"]
+    solver_params = config["solver_parameters"]
+
+    
+    
+    
+    nElem_x = Int(geom_params["nElem_x_computed"]) 
+    nElem_y = Int(geom_params["nElem_y_computed"])
+    nElem_z = Int(geom_params["nElem_z_computed"])
+    dx = Float32(geom_params["dx_computed"])
+    dy = Float32(geom_params["dy_computed"])
+    dz = Float32(geom_params["dz_computed"])
+    max_domain_dim = geom_params["max_domain_dim"]
+    filter_tol = Float32(get(solver_params, "filter_tolerance", 1.0e-5))
+
+    avg_element_size = (dx + dy + dz) / 3.0f0
+
+    
+    
+    
+    radius_multiplier = Float32(get(opt_params, "stress_regularization_ratio", 0.0f0))
+    
+    if radius_multiplier > 1.0e-6
+        stress_filter_radius = radius_multiplier * avg_element_size
+        
+        ran_stress_gpu = false
+        filtered_stress = zeros(Float32, nElem)
+
+        if CUDA.functional()
+             s_gpu, _, _, _ = GPUHelmholtz.apply_gpu_filter!(
+                l1_stress_norm_field, 
+                nElem_x, nElem_y, nElem_z, 
+                dx, dy, dz, stress_filter_radius, elements, filter_tol
+            )
+            if !isempty(s_gpu)
+                filtered_stress = s_gpu
+                ran_stress_gpu = true
+            end
+        end
+
+        if !ran_stress_gpu
+            # Note: We don't cache this factorization to avoid overwriting the main density filter cache
+            fact = assemble_helmholtz_system(nElem_x, nElem_y, nElem_z, dx, dy, dz, stress_filter_radius)
+            filtered_stress = apply_helmholtz_filter_cpu(
+                l1_stress_norm_field, 
+                fact, 
+                nElem_x, nElem_y, nElem_z, 
+                dx, dy, dz
+            )
+        end
+
+        
+        Threads.@threads for e in 1:nElem
+            l1_stress_norm_field[e] = filtered_stress[e]
+        end
+    end
+
+    
+    
+    
+    R_init_perc = Float32(get(opt_params, "filter_R_init_perc", 0.0f0))
+    R_interm_perc = Float32(get(opt_params, "filter_R_interm_perc", 0.0f0))
+    R_final_perc = Float32(get(opt_params, "filter_R_final_perc", 0.0f0))
+    R_interm_iter_perc = Float32(get(opt_params, "filter_R_interm_iter_perc", 50.0f0)) / 100.0f0
+    
+    R_init_length = R_init_perc / 100.0f0 * max_domain_dim
+    R_interm_length = R_interm_perc / 100.0f0 * max_domain_dim
+    R_final_length = R_final_perc / 100.0f0 * max_domain_dim
+
+    iter_interm = max(1, round(Int, R_interm_iter_perc * number_of_iterations))
+    calc_iter = min(iter, number_of_iterations)
+    
+    R_length = 0.0f0
+
+    if calc_iter <= iter_interm
+        t = (iter_interm > 1) ? Float32(calc_iter - 1) / Float32(iter_interm - 1) : 0.0f0
+        R_length = R_init_length * (1.0f0 - t) + R_interm_length * t
+    else 
+        t = (number_of_iterations > iter_interm) ? Float32(calc_iter - iter_interm) / Float32(number_of_iterations - iter_interm) : 0.0f0
+        R_length = R_interm_length * (1.0f0 - t) + R_final_length * t
+    end
+    
+    
+    
+    
+    
+    
+    
+    R_safe_min = 1.2f0 * avg_element_size 
+
+    if R_length < R_safe_min
+        if iter % 10 == 0 
+            println("  [Filter Guard] ⚠️ INSTABILITY DETECTED: Radius ($R_length) < Element Size ($avg_element_size).")
+            println("  [Filter Guard] 🛡️ Auto-increasing Radius to $R_safe_min to prevent checkerboarding.")
+        end
+        R_length = R_safe_min
+    end
+
+    
+    R_effective = R_length / 2.5f0
+    
+    
+    
+    
+    proposed_density_field = zeros(Float32, nElem)
+
+    Threads.@threads for e in 1:nElem
+        if !protected_elements_mask[e] 
+            current_l1_stress = l1_stress_norm_field[e]
+            
+            val = (current_l1_stress / l1_stress_allowable) / E
+            proposed_density_field[e] = clamp(val, min_density, max_density)
+        else
+            proposed_density_field[e] = original_density[e]
+        end
+    end
+
+    
+    
+    
+    filtered_density_field = proposed_density_field
+    filter_time = 0.0
+    filter_iters = 0
+    filter_res = 0.0
+    
+    if R_effective > 1e-4
+        ran_gpu_successfully = false
+        
+        
+        if CUDA.functional()
+            filtered_gpu, t_gpu, it_gpu, res_gpu = GPUHelmholtz.apply_gpu_filter!(
+                proposed_density_field, 
+                nElem_x, nElem_y, nElem_z, 
+                dx, dy, dz, R_effective, elements, filter_tol
+            )
+            
+            if !isempty(filtered_gpu)
+                filtered_density_field = filtered_gpu
+                filter_time = t_gpu
+                filter_iters = it_gpu
+                filter_res = res_gpu
+                ran_gpu_successfully = true
+            end
+        end
+
+        
+        if !ran_gpu_successfully
+            t_start = time()
+            if !GLOBAL_FILTER_CACHE.is_initialized || abs(GLOBAL_FILTER_CACHE.radius - R_effective) > 1e-5
+                println("  [CPU Filter] Building system for $nElem elements (R=$R_effective)...")
+                fact = assemble_helmholtz_system(nElem_x, nElem_y, nElem_z, dx, dy, dz, R_effective)
+                GLOBAL_FILTER_CACHE.K_filter = fact
+                GLOBAL_FILTER_CACHE.radius = R_effective
+                GLOBAL_FILTER_CACHE.is_initialized = true
+            end
+            
+            filtered_density_field = apply_helmholtz_filter_cpu(
+                proposed_density_field, 
+                GLOBAL_FILTER_CACHE.K_filter, 
+                nElem_x, nElem_y, nElem_z, 
+                dx, dy, dz
+            )
+            filter_time = time() - t_start
+            filter_iters = 1 
+            filter_res = 0.0
+        end
+    end
+    
+    
+    
+    
+    n_threads = Threads.nthreads()
+    max_changes = zeros(Float32, n_threads)
+
+    Threads.@threads for e in 1:nElem
+        if !protected_elements_mask[e] 
+            old_val = density[e]
+            new_val = clamp(filtered_density_field[e], min_density, max_density)
+            density[e] = new_val
+            
+            diff = abs(new_val - old_val)
+            tid = Threads.threadid()
+            if diff > max_changes[tid]
+                max_changes[tid] = diff
+            end
+        end
+    end
+    max_change = maximum(max_changes)
+    
+    
+    
+    
+    # Gradually increase the threshold for what is considered "void"
+    
+    current_threshold = 0.0f0
+    final_threshold_val = Float32(get(opt_params, "final_density_threshold", 0.95))
+    max_culling_ratio = Float32(get(opt_params, "max_culling_ratio", 0.1)) # Default 0.1
+    
+    if iter > number_of_iterations
+        current_threshold = final_threshold_val
+    else
+        progress = Float32(iter) / Float32(number_of_iterations)
+        current_threshold = final_threshold_val * progress
+    end
+    
+    cull_candidates = Int[]
+    active_count = 0
+    
+    for e in 1:nElem
+        if !protected_elements_mask[e]
+            if density[e] > min_density
+                active_count += 1
+                if density[e] < current_threshold
+                    push!(cull_candidates, e)
+                end
+            end
+        else
+             
+             if original_density[e] > min_density
+                 active_count += 1
+             end
+        end
+    end
+    
+    # Safety: Don't remove too many elements at once (Mesh Collapse prevention)
+    max_allowed_culls = floor(Int, active_count * max_culling_ratio)
+    
+    if length(cull_candidates) > max_allowed_culls
+        
+        sort!(cull_candidates, by = idx -> density[idx])
+        
+        for i in 1:max_allowed_culls
+            idx = cull_candidates[i]
+            density[idx] = min_density
+        end
+    else
+        for idx in cull_candidates
+            density[idx] = min_density
+        end
+    end
+
+    
+    Threads.@threads for e in 1:nElem
+        if protected_elements_mask[e]
+            density[e] = original_density[e]
+        end
+    end
+    
+    return max_change, R_length, current_threshold, filter_time, filter_iters, filter_res
+end
+
+end
+"// # FILE: .\src\Solvers\CPUSolver.jl";
+
+module CPUSolver
+
+using LinearAlgebra, SparseArrays, Base.Threads, Printf
+using ..Element
+
+export MatrixFreeSystem, solve_system_cpu
+
+struct MatrixFreeSystem{T}
+    nodes::Matrix{T}
+    elements::Matrix{Int}
+    E::T
+    nu::T
+    bc_indicator::Matrix{T}
+    free_dofs::Vector{Int}
+    constrained_dofs::Vector{Int}
+    density::Vector{T}
+    min_stiffness_threshold::T 
+    canonical_ke::Matrix{T}
+end
+
+function MatrixFreeSystem(nodes::Matrix{T}, elements::Matrix{Int}, E::T, nu::T,
+                          bc_indicator::Matrix{T}, density::Vector{T}=nothing,
+                          min_stiffness_threshold::T=Float32(1.0e-3)) where T
+                                    
+    nElem = size(elements, 1)
+    if density === nothing; density = ones(T, nElem); end
+
+    nNodes = size(nodes, 1)
+    ndof   = nNodes * 3
+    constrained = falses(ndof)
+    @inbounds for i in 1:nNodes
+        if bc_indicator[i,1]>0; constrained[3*(i-1)+1]=true; end
+        if bc_indicator[i,2]>0; constrained[3*(i-1)+2]=true; end
+        if bc_indicator[i,3]>0; constrained[3*(i-1)+3]=true; end
+    end
+
+    free_dofs        = findall(!, constrained)
+    constrained_dofs = findall(x->x, constrained)
+
+    n1, n2, n4, n5 = nodes[elements[1,1], :], nodes[elements[1,2], :], nodes[elements[1,4], :], nodes[elements[1,5], :]
+    dx, dy, dz = norm(n2-n1), norm(n4-n1), norm(n5-n1)
+    canonical_ke = Element.get_canonical_stiffness(dx, dy, dz, nu)
+
+    return MatrixFreeSystem(nodes, elements, E, nu, bc_indicator,
+                            free_dofs, constrained_dofs, density,
+                            min_stiffness_threshold, canonical_ke) 
+end
+
+function apply_stiffness(system::MatrixFreeSystem{T}, x::Vector{T}) where T
+    nNodes = size(system.nodes, 1)
+    ndof   = nNodes * 3
+    nElem  = size(system.elements, 1)
+
+    result = zeros(T, ndof)
+    result_local = [zeros(T, ndof) for _ in 1:Threads.nthreads()]
+    
+    Ke_base = system.canonical_ke
+
+    @threads for e in 1:nElem
+        dens = system.density[e]
+        if dens < system.min_stiffness_threshold
+            continue
+        end
+        
+        tid  = Threads.threadid()
+        conn = view(system.elements, e, :)
+        factor = system.E * dens
+
+        u_elem = zeros(T, 24)
+        for i in 1:8
+            node_id = conn[i]
+            base = 3*(node_id-1)
+            u_elem[3*(i-1)+1] = x[base+1]
+            u_elem[3*(i-1)+2] = x[base+2]
+            u_elem[3*(i-1)+3] = x[base+3]
+        end
+
+        f_elem = (Ke_base * u_elem) .* factor
+
+        for i in 1:8
+            node_id = conn[i]
+            base = 3*(node_id-1)
+            result_local[tid][base+1] += f_elem[3*(i-1)+1]
+            result_local[tid][base+2] += f_elem[3*(i-1)+2]
+            result_local[tid][base+3] += f_elem[3*(i-1)+3]
+        end
+    end
+
+    for r in result_local
+        result .+= r
+    end
+    return result
+end
+
+function apply_system(system::MatrixFreeSystem{T}, x::Vector{T}) where T
+    return apply_stiffness(system, x)
+end
+
+function apply_system_free_dofs(system::MatrixFreeSystem{T}, x_free::Vector{T}) where T
+    nNodes = size(system.nodes, 1)
+    ndof   = nNodes * 3
+    x_full = zeros(T, ndof)
+    x_full[system.free_dofs] = x_free
+    result_full = apply_system(system, x_full)
+    return result_full[system.free_dofs]
+end
+
+function compute_diagonal_preconditioner(system::MatrixFreeSystem{T}) where T
+    nNodes = size(system.nodes, 1)
+    ndof   = nNodes*3
+    nElem  = size(system.elements, 1)
+    
+    diag_vec = zeros(T, ndof)
+    diag_local = [zeros(T, ndof) for _ in 1:Threads.nthreads()]
+    
+    Ke_base = system.canonical_ke
+
+    @threads for e in 1:nElem
+        dens = system.density[e]
+        if dens < system.min_stiffness_threshold
+            continue
+        end
+        
+        tid  = Threads.threadid()
+        conn = view(system.elements, e, :)
+        factor = system.E * dens
+
+        for i in 1:8
+            node_id = conn[i]
+            base_dof = 3*(i-1)
+            
+            diag_val_x = Ke_base[base_dof+1, base_dof+1] * factor
+            diag_val_y = Ke_base[base_dof+2, base_dof+2] * factor
+            diag_val_z = Ke_base[base_dof+3, base_dof+3] * factor
+            
+            idx = 3*(node_id-1)
+            diag_local[tid][idx+1] += diag_val_x
+            diag_local[tid][idx+2] += diag_val_y
+            diag_local[tid][idx+3] += diag_val_z
+        end
+    end
+
+    for d in diag_local
+        diag_vec .+= d
+    end
+    return diag_vec
+end
+
+function matrix_free_cg_solve(system::MatrixFreeSystem{T}, f::Vector{T};
+                              max_iter=1000, tol=1e-6, use_precond=true,
+                              shift_factor::T=Float32(1.0e-6)) where T  
+    f_free = f[system.free_dofs]
+    n_free = length(system.free_dofs)
+    x_free = zeros(T, n_free)
+
+    diag_full = compute_diagonal_preconditioner(system)
+    diag_free = diag_full[system.free_dofs]
+
+    shift = T(0.0)
+    try
+        max_diag = maximum(diag_free)
+        shift = shift_factor * max_diag
+        println("CPUSolver: Applying diagonal shift: $shift (Factor: $shift_factor)")
+    catch e
+        @warn "Could not calculate diagonal shift: $e"
+    end
+    
+    r = copy(f_free)
+    diag_free[diag_free .<= shift] .= shift
+    z = use_precond ? r ./ diag_free : copy(r)
+    p = copy(z)
+    rz_old = dot(r, z)
+
+    println("Starting matrix-free CG solve with $(n_free) unknowns...")
+    total_time = 0.0
+    norm_f = norm(f_free)
+    final_res_norm = 0.0
+
+    if norm_f == 0
+        return (zeros(T, length(f)), 0.0, "None")
+    end
+
+    for iter in 1:max_iter
+        iter_start = time()
+        Ap = apply_system_free_dofs(system, p) .+ (shift .* p)
+        alpha = rz_old / dot(p, Ap)
+        x_free .+= alpha .* p
+        r .-= alpha .* Ap
+        
+        final_res_norm = norm(r) / norm_f
+        total_time += (time() - iter_start)
+
+        if final_res_norm < tol
+            println("CG converged in $iter iterations, residual = $final_res_norm, total time = $total_time sec")
+            break
+        end
+
+        diag_free[diag_free .<= shift] .= shift
+        z = use_precond ? r ./ diag_free : copy(r)
+        
+        rz_new = dot(r, z)
+        beta = rz_new / rz_old
+        p .= z .+ beta .* p
+        rz_old = rz_new
+    end
+
+    x_full = zeros(T, length(f))
+    x_full[system.free_dofs] = x_free
+    
+    return (x_full, final_res_norm, "Jacobi_CPU")
+end
+
+function solve_system_cpu(nodes::Matrix{T}, elements::Matrix{Int}, E::T, nu::T,
+                          bc_indicator::Matrix{T}, f::Vector{T};
+                          max_iter=1000, tol=1e-6, use_precond=true,
+                          density::Vector{T}=nothing,
+                          shift_factor::T=Float32(1.0e-6),
+                          min_stiffness_threshold::T=Float32(1.0e-3)) where T    
+                                    
+    system = MatrixFreeSystem(nodes, elements, E, nu, bc_indicator, density, min_stiffness_threshold)
+    
+    solve_start = time()
+    solution = matrix_free_cg_solve(system, f, max_iter=max_iter, tol=tol, 
+                                    use_precond=use_precond, shift_factor=shift_factor)
+    solve_end = time()
+    @printf("Total solution time (matrix-free CPU): %.6f sec\n", solve_end - solve_start)
+    return solution
+end
+
+end
+"// # FILE: .\src\Solvers\DirectSolver.jl";
+
+module DirectSolver
+
+using LinearAlgebra, SparseArrays, Base.Threads, Printf
+using ..Element
+using ..Boundary
+using ..Mesh
+
+export solve_system
+
+function assemble_global_stiffness_parallel_optimized(nodes::Matrix{Float32},
+                                                      elements::Matrix{Int},
+                                                      E::Float32,
+                                                      nu::Float32,
+                                                      density::Vector{Float32},
+                                                      min_stiffness_threshold::Float32) 
+                                                      
+    nElem = size(elements, 1)
+    ndof = size(nodes, 1) * 3
+
+    active_indices = findall(d -> d >= min_stiffness_threshold, density)
+    nActive = length(active_indices)
+    
+    if nActive == 0; error("No active elements."); end
+
+    n1, n2, n4, n5 = nodes[elements[1,1], :], nodes[elements[1,2], :], nodes[elements[1,4], :], nodes[elements[1,5], :]
+    dx, dy, dz = norm(n2-n1), norm(n4-n1), norm(n5-n1)
+    Ke_base = Element.get_canonical_stiffness(dx, dy, dz, nu)
+
+    entries_per_elem = 576
+    total_entries = nActive * entries_per_elem
+    I_vec = Vector{Int32}(undef, total_entries)
+    J_vec = Vector{Int32}(undef, total_entries)
+    V_vec = Vector{Float32}(undef, total_entries)
+
+    Threads.@threads for t_idx in 1:length(active_indices)
+        e = active_indices[t_idx]
+        offset = (t_idx - 1) * entries_per_elem
+        factor = E * density[e]
+        conn = view(elements, e, :)
+        
+        cnt = 0
+        @inbounds for i in 1:8
+            row_idx = 3*(conn[i]-1)
+            for r in 1:3
+                g_row = row_idx + r
+                for j in 1:8
+                    col_idx = 3*(conn[j]-1)
+                    for c in 1:3
+                        g_col = col_idx + c
+                        cnt += 1
+                        
+                        I_vec[offset+cnt] = Int32(g_row)
+                        J_vec[offset+cnt] = Int32(g_col)
+                        V_vec[offset+cnt] = Ke_base[3*(i-1)+r, 3*(j-1)+c] * factor
+                    end
+                end
+            end
+        end
+    end
+
+    K_global = sparse(I_vec, J_vec, V_vec, ndof, ndof)
+    return (K_global + K_global') / 2.0f0
+end
+
+function solve_system(nodes::Matrix{T}, elements::Matrix{Int}, E::T, nu::T,
+                      bc_indicator::Matrix{T}, f::Vector{T};
+                      density::Vector{T}=nothing,
+                      shift_factor::T=Float32(1.0e-6),
+                      min_stiffness_threshold::T=Float32(1.0e-3)) where T    
+                                    
+    nElem = size(elements,1)
+    if density === nothing
+        density = ones(T, nElem)
+    end
+
+    nNodes = size(nodes, 1)
+    ndof   = nNodes * 3
+
+    constrained = falses(ndof)
+    for i in 1:nNodes
+        if bc_indicator[i,1]>0; constrained[3*(i-1)+1]=true; end
+        if bc_indicator[i,2]>0; constrained[3*(i-1)+2]=true; end
+        if bc_indicator[i,3]>0; constrained[3*(i-1)+3]=true; end
+    end
+    free_dofs = findall(!, constrained)
+
+    K_global = assemble_global_stiffness_parallel_optimized(nodes, elements, E, nu, density, min_stiffness_threshold)
+
+    K_reduced = K_global[free_dofs, free_dofs]
+    F_reduced = f[free_dofs]
+
+    try
+        max_diag = maximum(abs.(diag(K_reduced)))
+        shift = shift_factor * max_diag
+        println("DirectSolver: Applying diagonal shift: $shift (Factor: $shift_factor)")
+        K_reduced = K_reduced + shift * I
+    catch e
+        @warn "Could not apply diagonal shift: $e"
+    end
+    
+    println("Solving linear system via LU factorization (CPU Direct).")
+    U_reduced = K_reduced \ F_reduced
+
+    U_full = zeros(T, ndof)
+    U_full[free_dofs] = U_reduced
+
+    return (U_full, 0.0, "Direct_LU")
+end
+
+end
+"// # FILE: .\src\Solvers\GPUSolver.jl";
+function assemble_cpu_matrix_for_amg(nodes::Matrix{T}, 
+                                     active_elements::Matrix{Int}, 
+                                     active_indices::Vector{Int}, 
+                                     density::Vector{T}, 
+                                     E::T, nu::T,
+                                     free_dofs::Vector{Int}) where T
+    
+    println("  [AMG Setup] Assembling sparse matrix on CPU (Parallel)...")
+    t_asm = time()
+    
+    n_full_dofs = size(nodes, 1) * 3
+    
+    
+    
+    
+    full_to_reduced = zeros(Int32, n_full_dofs)
+    Threads.@threads for i in 1:length(free_dofs)
+        @inbounds full_to_reduced[free_dofs[i]] = Int32(i)
+    end
+
+    nActive = length(active_indices)
+    
+    
+    
+    n1 = nodes[active_elements[1,1], :]
+    n2 = nodes[active_elements[1,2], :] 
+    n4 = nodes[active_elements[1,4], :] 
+    n5 = nodes[active_elements[1,5], :] 
+    dx = norm(n2 - n1); dy = norm(n4 - n1); dz = norm(n5 - n1)
+    Ke_base = Element.get_canonical_stiffness(Float32(dx), Float32(dy), Float32(dz), Float32(nu))
+    
+    
+    n_threads = Threads.nthreads()
+    
+    
+    
+    entries_per_elem = 576
+    total_entries = nActive * entries_per_elem
+    
+    I_global = Vector{Int32}(undef, total_entries)
+    J_global = Vector{Int32}(undef, total_entries)
+    V_global = Vector{Float64}(undef, total_entries)
+    
+    
+    chunk_size = div(nActive, n_threads)
+    
+    Threads.@threads for t in 1:n_threads
+        
+        start_idx = (t - 1) * chunk_size + 1
+        end_idx = (t == n_threads) ? nActive : t * chunk_size
+        
+        
+        
+        global_ptr = (start_idx - 1) * entries_per_elem
+        
+        for idx in start_idx:end_idx
+            e = active_indices[idx] 
+            factor = Float64(E * density[e]) 
+            conn = view(active_elements, idx, :)
+            
+            
+            for i in 1:8
+                node_i = conn[i]
+                base_i = 3 * (node_i - 1)
+                
+                for d_i in 1:3
+                    full_dof_i = base_i + d_i
+                    red_dof_i = full_to_reduced[full_dof_i]
+                    
+                    
+                    
+                    local_dof_i = 3*(i-1) + d_i
+                    
+                    for j in 1:8
+                        node_j = conn[j]
+                        base_j = 3 * (node_j - 1)
+                        
+                        for d_j in 1:3
+                            full_dof_j = base_j + d_j
+                            red_dof_j = full_to_reduced[full_dof_j]
+                            local_dof_j = 3*(j-1) + d_j
+                            
+                            global_ptr += 1
+                            
+                            
+                            
+                            
+                            
+                            
+                            
+                            
+                            
+                            if red_dof_i > 0 && red_dof_j > 0
+                                @inbounds I_global[global_ptr] = red_dof_i
+                                @inbounds J_global[global_ptr] = red_dof_j
+                                @inbounds V_global[global_ptr] = factor * Ke_base[local_dof_i, local_dof_j]
+                            else
+                                # Write a "dummy" entry that won't affect the matrix result
+                                
+                                @inbounds I_global[global_ptr] = 1
+                                @inbounds J_global[global_ptr] = 1
+                                @inbounds V_global[global_ptr] = 0.0
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    n_reduced = length(free_dofs)
+    
+    # sparse() sums duplicate entries automatically, which handles the "dummy" 0.0 entries correctly.
+    K_reduced = sparse(I_global, J_global, V_global, n_reduced, n_reduced)
+    
+    
+    K_reduced += sparse(I, n_reduced, n_reduced) * 1e-9
+
+    println("  [AMG Setup] CPU Parallel Assembly finished in $(round(time() - t_asm, digits=3))s.")
+    return K_reduced
+end
+"// # FILE: .\src\Solvers\IterativeSolver.jl";
+
+module IterativeSolver 
+ 
+using LinearAlgebra, Printf 
+using ..CPUSolver 
+using ..GPUSolver 
+ 
+export solve_system_iterative 
+ 
+function solve_system_iterative(nodes::Matrix{T}, elements::Matrix{Int}, E::T, nu::T, 
+                                bc_indicator::Matrix{T}, f::Vector{T}; 
+                                solver_type=:matrix_free, max_iter=1000, tol=1e-6, 
+                                use_precond=true, density::Vector{T}=nothing, 
+                                gpu_method=:native, krylov_solver=:cg, 
+                                shift_factor::T=Float32(1.0e-6), 
+                                min_stiffness_threshold::T=Float32(1.0e-3),
+                                u_guess::Vector{T}=T[], 
+                                config::Dict=Dict()) where T      
+                                 
+    if solver_type == :matrix_free 
+        return CPUSolver.solve_system_cpu( 
+            nodes, elements, E, nu, bc_indicator, f; 
+            max_iter=max_iter, tol=tol, use_precond=use_precond,  
+            density=density, shift_factor=shift_factor, 
+            min_stiffness_threshold=min_stiffness_threshold  
+        ) 
+    elseif solver_type == :gpu 
+        if density === nothing 
+            error("You must provide a density array for GPU solver.") 
+        end 
+        return GPUSolver.solve_system_gpu( 
+            nodes, elements, E, nu, bc_indicator, f, density; 
+            max_iter=max_iter, tol=tol,  
+            method=gpu_method, solver=krylov_solver, use_precond=use_precond, 
+            shift_factor=shift_factor, 
+            min_stiffness_threshold=min_stiffness_threshold,
+            u_guess=u_guess, 
+            config=config 
+        ) 
+    else 
+        error("Unknown solver type: $solver_type. Use :matrix_free or :gpu.") 
+    end 
+end 
+ 
+end
+"// # FILE: .\src\Solvers\Solver.jl";
+
+module Solver 
+ 
+using CUDA 
+using Printf
+using ..Helpers  
+using ..DirectSolver: solve_system as solve_system_direct 
+using ..IterativeSolver: solve_system_iterative 
+using ..MeshPruner 
+ 
+export solve_system 
+ 
+function choose_solver(nNodes, nElem, config) 
+    solver_params = config["solver_parameters"] 
+    configured_type = Symbol(lowercase(get(solver_params, "solver_type", "direct"))) 
+ 
+    if configured_type == :direct 
+        if nElem > 100_000 
+            @warn "Direct solver requested for large mesh ($(nElem) elements). Switching to Matrix-Free iterative." 
+            return :matrix_free 
+        end 
+        return :direct 
+    elseif configured_type == :gpu 
+        if CUDA.functional() && Helpers.has_enough_gpu_memory(nNodes, nElem, true) 
+            return :gpu 
+        else 
+            @warn "Not enough GPU memory even for matrix-free. Falling back to CPU."
+            return :matrix_free 
+        end 
+    elseif configured_type == :matrix_free 
+        return :matrix_free 
+    else 
+        @warn "Unknown solver_type: $(configured_type). Defaulting to matrix_free." 
+        return :matrix_free 
+    end 
+end 
+ 
+function solve_system(nodes::Matrix{Float32}, 
+                      elements::Matrix{Int}, 
+                      E::Float32, 
+                      nu::Float32, 
+                      bc_indicator::Matrix{Float32}, 
+                      F::Vector{Float32}; 
+                      density::Vector{Float32}=nothing, 
+                      config::Dict, 
+                      min_stiffness_threshold::Float32=Float32(1.0e-3),
+                      prune_voids::Bool=true,
+                      u_prev::Vector{Float32}=Float32[]) 
+                            
+    active_system = nothing
+    
+    solve_nodes = nodes
+    solve_elements = elements
+    solve_bc = bc_indicator
+    solve_F = F
+    solve_density = density
+    
+    solve_u_guess = Float32[]
+
+    if prune_voids && density !== nothing
+        prune_threshold = min_stiffness_threshold * 1.01f0 
+        nElem_total = size(elements, 1)
+        nActive = count(d -> d > prune_threshold, density)
+          
+        if nActive < (nElem_total * 0.99)
+            active_system = MeshPruner.prune_system(nodes, elements, density, prune_threshold, bc_indicator, F)
+              
+            solve_nodes = active_system.nodes
+            solve_elements = active_system.elements
+            solve_bc = active_system.bc_indicator
+            solve_F = active_system.F
+            solve_density = active_system.density
+            
+            if !isempty(u_prev) && length(u_prev) == length(F)
+                nActiveNodes = length(active_system.new_to_old_node_map)
+                solve_u_guess = zeros(Float32, nActiveNodes * 3)
+                
+                for (new_idx, old_idx) in enumerate(active_system.new_to_old_node_map)
+                    base_old = 3 * (old_idx - 1)
+                    base_new = 3 * (new_idx - 1)
+                    solve_u_guess[base_new+1] = u_prev[base_old+1]
+                    solve_u_guess[base_new+2] = u_prev[base_old+2]
+                    solve_u_guess[base_new+3] = u_prev[base_old+3]
+                end
+            end
+        else
+            solve_u_guess = u_prev
+        end
+    else
+        solve_u_guess = u_prev
+    end
+
+    nNodes_solve = size(solve_nodes, 1) 
+    nElem_solve = size(solve_elements, 1) 
+      
+    solver_params = config["solver_parameters"] 
+    solver_type = choose_solver(nNodes_solve, nElem_solve, config) 
+      
+    base_tol = Float32(get(solver_params, "tolerance", 1.0e-6)) 
+    max_iter = Int(get(solver_params, "max_iterations", 1000)) 
+    shift_factor = Float32(get(solver_params, "diagonal_shift_factor", 1.0e-6)) 
+      
+    iter_current = get(config, "current_outer_iter", 1)
+    iter_max = get(config, "number_of_iterations", 30)
+    
+    progress = clamp(Float32(iter_current) / Float32(iter_max), 0f0, 1f0)
+    
+    start_tol_log = -5.0 
+    end_tol_log = log10(base_tol)
+    
+    adaptive_tol = Float32(10.0^((1.0 - progress) * start_tol_log + progress * end_tol_log))
+    
+    if solver_type == :gpu
+        gpu_limit = 5.0e-7
+        if adaptive_tol < gpu_limit
+            adaptive_tol = Float32(gpu_limit)
+        end
+        tol_str = @sprintf("%.1e", adaptive_tol)
+        println("   [Solver] Adaptive Tol: $tol_str (Iter $iter_current/$iter_max)")
+    end
+
+    use_precond = true 
+    
+    U_solved_tuple = if solver_type == :direct 
+        solve_system_direct(solve_nodes, solve_elements, E, nu, solve_bc, solve_F; 
+                            density=solve_density, 
+                            shift_factor=shift_factor, 
+                            min_stiffness_threshold=min_stiffness_threshold) 
+                             
+    elseif solver_type == :gpu 
+        gpu_method = Symbol(lowercase(get(solver_params, "gpu_method", "krylov"))) 
+        krylov_solver = Symbol(lowercase(get(solver_params, "krylov_solver", "cg"))) 
+ 
+        solve_system_iterative(solve_nodes, solve_elements, E, nu, solve_bc, solve_F; 
+                             solver_type=:gpu, max_iter=max_iter, tol=adaptive_tol, 
+                             density=solve_density, 
+                             use_precond=use_precond,  
+                             gpu_method=gpu_method, krylov_solver=krylov_solver, 
+                             shift_factor=shift_factor, 
+                             min_stiffness_threshold=min_stiffness_threshold, 
+                             u_guess=solve_u_guess, 
+                             config=config) 
+                             
+    else   
+        solve_system_iterative(solve_nodes, solve_elements, E, nu, solve_bc, solve_F; 
+                             solver_type=:matrix_free, max_iter=max_iter, tol=adaptive_tol, 
+                             use_precond=use_precond, 
+                             density=solve_density, 
+                             shift_factor=shift_factor, 
+                             min_stiffness_threshold=min_stiffness_threshold, 
+                             config=config) 
+    end 
+ 
+    U_solved_vec = U_solved_tuple[1]
+    res_val = U_solved_tuple[2]
+    prec_str = U_solved_tuple[3]
+
+    if active_system !== nothing
+        U_full = MeshPruner.reconstruct_full_solution(U_solved_vec, active_system.new_to_old_node_map, size(nodes, 1))
+        return (U_full, res_val, prec_str)
+    else
+        return U_solved_tuple
+    end
+end 
+ 
+end
+"// # FILE: .\src\Utils\Diagnostics.jl";
+
+module Diagnostics
+
+using CUDA
+using Printf
+using Dates
+
+export log_status, check_memory, init_log_file, write_iteration_log
+
+# Added "Lin Res" and "Prec" columns to header
+const LOG_HEADER = """
+| Iter | Mesh Size | Total El | Active El | Radius | Cutoff | Compliance | Strain Energy | Avg L1 Stress | Vol Frac | Delta Rho | Refine? | Lin Res  | Prec   | Time (s) | Wall Time | VRAM |
+|------|-----------|----------|-----------|--------|--------|------------|---------------|---------------|----------|-----------|---------|----------|--------|----------|-----------|------|"""
+
+function log_status(msg::String)
+    timestamp = Dates.format(now(), "HH:MM:SS")
+    println("[$timestamp] $msg")
+    flush(stdout) 
+end
+
+function check_memory()
+    if CUDA.functional()
+        free_gpu, total_gpu = CUDA.available_memory(), CUDA.total_memory()
+        return free_gpu
+    end
+    return 0
+end
+
+function format_memory_str()
+    if CUDA.functional()
+        free_gpu, total_gpu = CUDA.available_memory(), CUDA.total_memory()
+        used_gb = (total_gpu - free_gpu) / 1024^3
+        return @sprintf("%.1fG", used_gb)
+    end
+    return "CPU"
+end
+
+function init_log_file(filename::String, config::Dict)
+    open(filename, "w") do io
+        write(io, "HEXA FEM TOPOLOGY OPTIMIZATION LOG\n")
+        write(io, "Start Date: $(now())\n")
+        write(io, "Config Geometry: $(config["geometry"])\n")
+        write(io, "="^200 * "\n") 
+        write(io, LOG_HEADER * "\n")
+    end
+end
+
+
+function write_iteration_log(filename::String, iter, mesh_dims_str, nTotal, nActive, 
+                             filter_R, threshold, compliance, strain_energy, avg_l1, 
+                             vol_frac, delta_rho, refine_status, time_sec,
+                             lin_residual=0.0, precond_type="-")
+    
+    vram_str = format_memory_str()
+    wall_time = Dates.format(now(), "HH:MM:SS")
+    
+    f_R = Float64(filter_R)
+    f_th = Float64(threshold)
+    f_comp = Float64(compliance)
+    f_se = Float64(strain_energy)
+    f_l1 = Float64(avg_l1)
+    f_vf = Float64(vol_frac)
+    f_dr = Float64(delta_rho)
+    f_time = Float64(time_sec)
+    
+    
+    f_res = Float64(lin_residual)
+
+    line = @sprintf("| %4d | %9s | %8d | %9d | %6.3f | %6.3f | %10.3e | %13.3e | %13.3e | %8.4f | %8.2f%% | %7s | %8.1e | %-6s | %8.2f | %9s | %4s |",
+                    iter, mesh_dims_str, nTotal, nActive, f_R, f_th,
+                    f_comp, f_se, f_l1, f_vf, 
+                    f_dr*100, refine_status, f_res, precond_type, f_time, wall_time, vram_str)
+    
+    open(filename, "a") do io
+        println(io, line)
+    end
+    
+    if iter == 1 || iter % 10 == 0 || refine_status != "Nominal"
+        println(LOG_HEADER)
+    end
+    println(line)
+    flush(stdout)
+end
+
+end
+"// # FILE: .\src\Utils\Helpers.jl";
+
+
+module Helpers 
+
+using CUDA 
+using Printf
+
+export expand_element_indices, nodes_from_location, parse_location_component 
+export calculate_element_distribution, has_enough_gpu_memory, clear_gpu_memory, get_max_feasible_elements
+
+function expand_element_indices(elem_inds, dims) 
+    nElem_x = dims[1] - 1 
+    nElem_y = dims[2] - 1 
+    nElem_z = dims[3] - 1 
+    inds = Vector{Vector{Int}}() 
+    for d in 1:3 
+        if (typeof(elem_inds[d]) == String && elem_inds[d] == ":") 
+            if d == 1 
+                push!(inds, collect(1:nElem_x)) 
+            elseif d == 2 
+                push!(inds, collect(1:nElem_y)) 
+            elseif d == 3 
+                push!(inds, collect(1:nElem_z)) 
+            end 
+        else 
+            push!(inds, [Int(elem_inds[d])]) 
+        end 
+    end 
+    result = Int[] 
+    for i in inds[1], j in inds[2], k in inds[3] 
+        eidx = i + (j-1)*nElem_x + (k-1)*nElem_x*nElem_y 
+        push!(result, eidx) 
+    end 
+    return result 
+end 
+
+function nodes_from_location(loc::Vector, dims) 
+    nNodes_x, nNodes_y, nNodes_z = dims 
+    ix = parse_location_component(loc[1], nNodes_x) 
+    iy = parse_location_component(loc[2], nNodes_y) 
+    iz = parse_location_component(loc[3], nNodes_z) 
+    nodes = Int[] 
+    for k in iz, j in iy, i in ix 
+        node = i + (j-1)*nNodes_x + (k-1)*nNodes_x*nNodes_y 
+        push!(nodes, node) 
+    end 
+    return nodes 
+end 
+
+function parse_location_component(val, nNodes::Int) 
+    if val == ":" 
+        return collect(1:nNodes) 
+    elseif isa(val, String) && endswith(val, "%") 
+        perc = parse(Float64, replace(val, "%"=>"")) / 100.0 
+        idx = round(Int, 1 + perc*(nNodes-1)) 
+        return [idx] 
+    elseif isa(val, Number) 
+        if 0.0 <= val <= 1.0 
+            idx = round(Int, 1 + val*(nNodes-1)) 
+            return [idx] 
+        else 
+            idx = clamp(round(Int, val), 1, nNodes) 
+            return [idx] 
+        end 
+    else 
+        error("Invalid location component: $val") 
+    end 
+end 
+
+function clear_gpu_memory() 
+    if !CUDA.functional() 
+        return (0, 0) 
+    end 
+    GC.gc() 
+    CUDA.reclaim() 
+
+    final_free, total = CUDA.available_memory(), CUDA.total_memory() 
+    return (final_free, total) 
+end 
+
+"""
+    estimate_bytes_per_element(matrix_free::Bool)
+
+Refined estimation for RTX 3080 vs H100 optimization.
+Matrix-Free CG requires: 
+- 7 Vectors (Float32) * 24 DOF/elem = 168 * 4 bytes = 672 bytes (worst case full node overlap)
+- Connectivity (Int32) = 32 bytes
+- Density field = 4 bytes
+- Geometry overhead
+Realistically, nodes are shared 8x, so per-element vector cost is lower.
+Conservative estimate: ~220 bytes per element.
+"""
+function estimate_bytes_per_element(matrix_free::Bool=true)
+    if matrix_free
+        return 220 
+    else
+        return 12000 
+    end
+end
+
+"""
+    get_max_feasible_elements(matrix_free::Bool=true; safety_factor::Float64=0.95, bytes_per_elem::Int=0)
+
+Calculates the maximum number of elements the GPU can hold based on CURRENT available memory.
+Accepts custom safety factors and byte estimates for hardware tuning.
+"""
+function get_max_feasible_elements(matrix_free::Bool=true; safety_factor::Float64=0.95, bytes_per_elem::Int=0)
+    if !CUDA.functional() 
+        return 5_000_000 
+    end 
+      
+    free_mem, total_mem = CUDA.available_memory(), CUDA.total_memory() 
+    
+    
+    
+    if total_mem > (70 * 1024^3) && safety_factor == 0.95
+         safety_factor = 0.98
+    end
+    
+    usable_mem = free_mem * safety_factor 
+      
+    bpe = (bytes_per_elem > 0) ? bytes_per_elem : estimate_bytes_per_element(matrix_free)
+    
+    max_elems = floor(Int, usable_mem / bpe) 
+      
+    return max_elems
+end
+ 
+function estimate_gpu_memory_required(nNodes, nElem, matrix_free::Bool=true) 
+    return nElem * estimate_bytes_per_element(matrix_free)
+end 
+ 
+function has_enough_gpu_memory(nNodes, nElem, matrix_free::Bool=true) 
+    if !CUDA.functional() 
+        return false 
+    end 
+    try 
+        free_mem, total_mem = CUDA.available_memory(), CUDA.total_memory() 
+        required_mem = estimate_gpu_memory_required(nNodes, nElem, matrix_free) 
+          
+        
+        utilization_limit = (total_mem > 70 * 1024^3) ? 0.98 : 0.90
+        
+        usable_mem = free_mem * utilization_limit 
+          
+        req_gb = required_mem / 1024^3
+        avail_gb = usable_mem / 1024^3
+
+        if required_mem > usable_mem
+            @warn "GPU Memory Estimate:"
+            @printf("   Required:  %.2f GB\n", req_gb)
+            @printf("   Available: %.2f GB\n", avail_gb)
+            println("   ⚠️ WARNING: Memory estimate exceeds safe limits.")
+            return true 
+        end
+        return true 
+    catch e 
+        println("Error checking GPU memory: $e") 
+        return true 
+    end 
+end 
+ 
+function calculate_element_distribution(length_x, length_y, length_z, target_elem_count) 
+    total_volume = length_x * length_y * length_z 
+      
+    ratio_x = length_x / cbrt(total_volume) 
+    ratio_y = length_y / cbrt(total_volume) 
+    ratio_z = length_z / cbrt(total_volume) 
+
+    base_count = cbrt(target_elem_count) 
+    nElem_x = max(1, round(Int, base_count * ratio_x)) 
+    nElem_y = max(1, round(Int, base_count * ratio_y)) 
+    nElem_z = max(1, round(Int, base_count * ratio_z)) 
+
+    dx = length_x / nElem_x 
+    dy = length_y / nElem_y 
+    dz = length_z / nElem_z 
+    actual_elem_count = nElem_x * nElem_y * nElem_z 
+    return nElem_x, nElem_y, nElem_z, Float32(dx), Float32(dy), Float32(dz), actual_elem_count 
+end 
+ 
+end
+"// # FILE: .\src\Utils\get_package_versions.jl";
+
+import Pkg
+
+const TARGET_FILE = joinpath(@__DIR__, "..", "..", "Project.toml") # Adjusted path to root
+
+println(">>> Generating Project.toml from current environment...")
+
+deps = Pkg.dependencies()
+sorted_deps = sort(collect(deps), by=x->x[2].name)
+
+buffer = IOBuffer()
+
+println(buffer, "name = \"HEXA_TopOpt\"")
+println(buffer, "uuid = \"a1b2c3d4-e5f6-4a5b-9c8d-7e6f5g4h3i2j\"")
+println(buffer, "authors = [\"User\"]")
+println(buffer, "version = \"1.0.0\"")
+println(buffer, "")
+
+println(buffer, "[deps]")
+for (uuid, pkg) in sorted_deps
+    if pkg.is_direct_dep
+        println(buffer, "$(pkg.name) = \"$uuid\"")
+    end
+end
+println(buffer, "")
+
+println(buffer, "[compat]")
+
+println(buffer, "julia = \"1.6\"") 
+
+for (uuid, pkg) in sorted_deps
+    if pkg.is_direct_dep
+        if pkg.version !== nothing
+            # FIX: Removed the "=" sign. 
+            # "$(pkg.version)" implies semver compatibility (e.g., "1.2.3" allows "1.2.4" and "1.9.0")
+            println(buffer, "$(pkg.name) = \"$(pkg.version)\"")
+        else
+            println(buffer, "# Warning: Could not detect version for $(pkg.name)")
+        end
+    end
+end
+
+new_content = String(take!(buffer))
+
+if isfile(TARGET_FILE)
+    mv(TARGET_FILE, TARGET_FILE * ".bak", force=true)
+    println(">>> Existing Project.toml backed up to Project.toml.bak")
+end
+
+open(TARGET_FILE, "w") do io
+    write(io, new_content)
+end
+
+println("-"^60)
+println(">>> SUCCESS: Project.toml has been written successfully.")
+println(">>> Location: $TARGET_FILE")
+println("-"^60)
